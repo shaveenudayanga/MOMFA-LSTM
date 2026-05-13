@@ -1,0 +1,17 @@
+# Data and Models
+data/
+*.csv
+*.pt
+*.pth
+*.h5
+*.onnx
+
+# Python Caches
+__pycache__/
+*.py[cod]
+*~
+
+# Environments
+.env
+venv/
+env/
