@@ -1,0 +1,33 @@
+# ── Environment ───────────────────────────────────────────────
+python-dotenv
+
+# ── Data ingestion ────────────────────────────────────────────
+requests
+tvDatafeed @ git+https://github.com/rongardF/tvdatafeed.git
+
+# ── Data processing ───────────────────────────────────────────
+pandas
+numpy
+pandas-ta
+scikit-learn
+
+# ── PyTorch (CUDA) ────────────────────────────────────────────
+# If running on CPU only, replace with: pip install torch
+torch
+torchvision
+torchaudio
+
+# ── Metaheuristic baselines ───────────────────────────────────
+pyswarms          # PSO-LSTM baseline
+deap              # GA-LSTM baseline
+
+# ── Statistical testing ───────────────────────────────────────
+scipy             # Wilcoxon signed-rank test
+
+# ── Results and logging ───────────────────────────────────────
+matplotlib        # plotting Pareto front and results
+seaborn           # better plots for thesis figures
+tqdm              # progress bars for long optimization runs
+
+# ── Reproducibility ───────────────────────────────────────────
+joblib            # parallel runs, saving/loading models

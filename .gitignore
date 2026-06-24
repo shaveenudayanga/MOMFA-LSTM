@@ -15,3 +15,10 @@ __pycache__/
 .env
 venv/
 env/
+
+# Generated outputs
+results/
+quick_test.py
+
+# Research documents
+*.pdf
