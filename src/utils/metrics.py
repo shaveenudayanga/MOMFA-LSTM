@@ -54,17 +54,22 @@ def wilcoxon_test(scores_a: np.ndarray, scores_b: np.ndarray) -> tuple:
     return float(stat), float(p)
 
 
-def compute_all(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    """Compute all four metrics at once.
+def compute_all(y_true: np.ndarray, y_pred: np.ndarray, y_prev: np.ndarray | None = None) -> dict:
+    """Compute all four metrics at once (all inputs in real price units).
 
-    DA is computed on aligned pairs: y_true[1:] vs y_true[:-1] as y_prev.
-    This drops the first prediction (no previous actual available).
-
-    All inputs must be inverse-transformed (real price units).
+    Args:
+        y_true: actual next-day closes
+        y_pred: predicted next-day closes
+        y_prev: today's closes. When given, DA uses every prediction. When omitted,
+                y_true shifted by one day is used and the first prediction is dropped.
     """
+    if y_prev is None:
+        da = directional_accuracy(y_true[1:], y_pred[1:], y_true[:-1])
+    else:
+        da = directional_accuracy(y_true, y_pred, y_prev)
     return {
         'rmse': rmse(y_true, y_pred),
         'mae':  mae(y_true, y_pred),
         'mape': mape(y_true, y_pred),
-        'da':   directional_accuracy(y_true[1:], y_pred[1:], y_true[:-1]),
+        'da':   da,
     }

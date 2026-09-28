@@ -117,10 +117,11 @@ def calculate_indicators(df):
 
     assert len(features) == 25, f"Feature count error: expected 25, got {len(features)}"
 
-    # Target: next business day closing price
+    # Target: next business day closing price. Today's close is kept alongside it
+    # because the LSTM predicts the return from today's close (DECISIONS.md D-009).
     d['target'] = d['close'].shift(-1)
 
-    result = d[features + ['target']].dropna()
+    result = d[features + ['close', 'target']].dropna()
     return result
 
 
@@ -142,6 +143,20 @@ def check_nan_report(df, ticker=""):
             print(f"  {col:<15} {count:>5} NaN  ({count/len(d)*100:.1f}%)")
     print(f"  Rows surviving dropna: {d.dropna().shape[0]}")
     print(f"{'='*55}\n")
+
+
+def load_raw_ohlcv(path):
+    """Read one raw tvDatafeed CSV as a business-day OHLCV series (spec 3.B.3).
+
+    asfreq('B') inserts a row for every weekday in the date range; ffill()
+    then fills genuine missing trading days (public holidays, trading halts),
+    never weekends.
+    """
+    df = pd.read_csv(path)
+    df.columns = [c.lower() for c in df.columns]
+    df['datetime'] = pd.to_datetime(df['datetime'])
+    df = df.set_index('datetime').sort_index()
+    return df.asfreq('B').ffill()
 
 
 def process_and_export_all(run_nan_report=False):
@@ -179,18 +194,8 @@ def process_and_export_all(run_nan_report=False):
         path   = os.path.join(data_dir, file)
 
         try:
-            df = pd.read_csv(path)
-            df.columns = [c.lower() for c in df.columns]
-            df['datetime'] = pd.to_datetime(df['datetime'])
-            df = df.set_index('datetime').sort_index()
-
-            raw_rows = len(df)
-
-            # Business days only: Mon-Fri
-            # asfreq('B') inserts rows for every weekday in the date range.
-            # ffill() fills only genuine missing trading days such as
-            # public holidays or trading halts, never weekends.
-            df = df.asfreq('B').ffill()
+            raw_rows = len(pd.read_csv(path))
+            df = load_raw_ohlcv(path)
 
             if run_nan_report:
                 # Run before final dropna to see which columns cause row loss

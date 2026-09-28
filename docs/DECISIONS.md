@@ -171,7 +171,9 @@ separate models per ticker. This changes param counts, complexity values, and ge
 **Decision:**
 Separate LSTM model trained per stock ticker. 10 models total.
 MOMFA runs independently per ticker and returns 10 separate Pareto fronts.
-Results are averaged across tickers for reporting.
+Results are reported per ticker. Update 2026-09-29: RMSE and MAE are never averaged across
+tickers (they are in LKR and prices differ ~15x); cross-ticker summaries use RMSE/MAE divided
+by the random-walk value, MAPE and DA (see docs/RESULTS_PLAN.md).
 
 **Reasoning:**
 Each CSE stock has different volatility, liquidity, and sector characteristics.
@@ -216,6 +218,10 @@ effective within a run and avoids the complexity of cross-process shared state.
   lose the per-run cache benefit entirely
 - Threading backend: GIL prevents true CPU parallelism for PyTorch training
 
+**Update 2026-09-28:** on a machine with CUDA, evaluations run sequentially on the GPU
+(`_resolve_n_jobs` in momfa.py), because several processes sharing one GPU conflict and
+serialise anyway. Parallel workers are used on CPU-only machines.
+
 **Consequences:**
 Worker functions must be picklable (no lambdas, no closures capturing non-picklable state).
 folds (numpy arrays + sklearn scalers) are picklable. The cache dict stays in the main process.
@@ -257,6 +263,103 @@ All-zero masks are corrected silently. The corrected mask is used for both evalu
 and as the phenotype stored in the cache and archive. This means the phenotype stored
 may differ slightly from what the sigmoid transfer would have produced without the guard,
 but the alternative is a crash.
+
+---
+
+## D-008: Final model early-stops on the last 126 development days
+
+**Date:** 2026-09-28
+**Status:** ACCEPTED (spec 9.1.1)
+
+**Context:**
+The final model of every method is retrained before its one-time score on the test
+period (spec 9.1). Early stopping (patience 10) needs validation data, and the spec
+did not say which data to use.
+
+**Decision:**
+Train on the development period minus its last 126 trading days; early-stop on those
+126 days; score once on the test period. No second retrain on the full development
+period. Same rule for MOMFA's selected models and every baseline
+(`src/evaluation.py → evaluate_on_test`).
+
+**Reasoning:**
+The test period can never influence training, so it cannot be the stopping set.
+126 days matches the walk-forward validation window size, so the stopping signal is
+as reliable as during the search.
+
+**Rejected alternatives:**
+- Early-stop on the test period: leakage, invalidates the final numbers
+- Retrain on all development rows for a fixed epoch count: adds a second rule to
+  justify and a second training run per model
+- No early stopping for the final model: breaks the fixed training protocol (3.F.3)
+
+**Consequences:**
+The final model sees 126 fewer training rows than the development period holds.
+The slice size used is stored per result as `test_stop_size`.
+
+---
+
+## D-009: LSTM predicts the next-day return; metrics stay on the next-day close price
+
+**Date:** 2026-09-28
+**Status:** ACCEPTED by author (spec 9.2.1)
+
+**Context:**
+Predicting the Min-Max-scaled price level failed on the test period because CSE prices
+rose far above the training range (FINDINGS.md F-001: vanilla test RMSE 57.5 vs random
+walk 5.0 on HNB).
+
+**Decision:**
+The LSTM target is the next-day return r_t = Close[t+1] / Close[t] - 1, Min-Max scaled
+with a scaler fit on training rows only. The forecast price is Close[t] x (1 + r_hat).
+RMSE, MAE, MAPE and DA are computed on that price in LKR, exactly as before. Applies to
+MOMFA and every learned baseline through src/evaluation.py.
+
+**Reasoning:**
+Returns stay in a similar range when the price level moves to a new regime, so the model
+is never asked to output values it has never seen. It is the standard target in financial
+forecasting, and the research question (forecasting the next-day close) is unchanged.
+Random walk is the special case r_hat = 0, which makes the S1 comparison direct.
+
+**Rejected alternatives:**
+- Keep the level target: fails badly on the test period (F-001)
+- Normalise each input window by its last close: also works, but harder to explain and
+  changes the feature pipeline, not only the target
+- Fit the scaler on all data: leakage (spec 9.2)
+
+**Consequences:**
+- Cleaned data files now also keep today's close (`close` column).
+- Price-level input indicators still go out of range (F-002, open).
+- Results produced before this date with the level target are invalid.
+
+---
+
+## D-010: Full compute budget, no reductions (spec 9.8)
+
+**Date:** 2026-09-28
+**Status:** ACCEPTED by author
+
+**Context:**
+Spec 9.8 estimates the full plan at about 4.65 million LSTM trainings and lists ways
+to cut it (fewer folds, fewer seeds or tickers, fewer epochs during search).
+
+**Decision:**
+No reduction. Every method runs K = 5 folds, 30 seeds, 10 tickers, N = 20, T = 30
+(620 evaluations per run) and max 50 epochs, exactly as in the proposal. The timeline
+is extended instead, using the laptop GPU and Modal cloud credit ($30/month).
+
+**Reasoning:**
+Any reduction changes the research that was proposed and approved, weakens the
+statistics (Wilcoxon on 30 paired seeds per ticker) or makes the search less
+thorough than stated. Time is available; changing the method is not necessary.
+
+**Rejected alternatives:**
+- Fewer folds / seeds / tickers / epochs during search (spec 9.8 a-c): change the study
+
+**Consequences:**
+Experiments take months of compute. Runs must be resumable and save results as they
+go, so an interrupted run never loses finished work. The evaluation cache (9.7)
+matters for run time.
 
 ---
 

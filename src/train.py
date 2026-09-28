@@ -4,8 +4,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from utils.metrics import compute_all
-
 
 def get_device() -> torch.device:
     return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -33,7 +31,6 @@ def train_fold(
     y_train: np.ndarray,
     X_val: np.ndarray,
     y_val: np.ndarray,
-    target_scaler,
     lr: float,
     optimizer_name: str,
     max_epochs: int = 50,
@@ -41,29 +38,22 @@ def train_fold(
     patience: int = 10,
     device: torch.device = None,
 ) -> dict:
-    """Train one LSTM on one walk-forward fold and return validation metrics.
+    """Train one LSTM with early stopping on (X_val, y_val) and keep its best weights.
 
     Args:
-        model:          LSTMModel instance (already built for this fold's n_features).
-        X_train:        (n_seq, lookback, n_features) float64, scaled.
-        y_train:        (n_seq,) float64, scaled.
-        X_val:          (n_seq, lookback, n_features) float64, scaled.
-        y_val:          (n_seq,) float64, scaled.
-        target_scaler:  MinMaxScaler fitted on training targets - used to inverse-transform.
+        model:          LSTMModel instance.
+        X_train:        (n_seq, lookback, n_features) scaled inputs.
+        y_train:        (n_seq,) scaled targets.
+        X_val, y_val:   Early-stopping data, same format.
         lr:             Learning rate.
         optimizer_name: 'adam' | 'rmsprop' | 'sgd'.
         max_epochs:     Hard cap (50 per spec).
         batch_size:     Mini-batch size (32 per spec).
-        patience:       Early stopping patience on val MSE (10 per spec).
+        patience:       Early stopping patience on validation MSE (10 per spec).
         device:         Torch device. Defaults to get_device().
 
     Returns dict:
-        val_rmse:   float  - primary fitness objective f1 (inverse-transformed prices)
-        val_mae:    float
-        val_mape:   float
-        val_da:     float
-        val_preds:  np.ndarray  - inverse-transformed predictions
-        val_true:   np.ndarray  - inverse-transformed ground truth
+        model:      the trained model with its best (early-stopped) weights
         best_epoch: int
     """
     if device is None:
@@ -114,30 +104,14 @@ def train_fold(
             if epochs_no_improve >= patience:
                 break
 
-    # ── Restore best weights and predict ─────────────────────────────────────
     model.load_state_dict(best_weights)
-    model.eval()
+    return {'model': model, 'best_epoch': best_epoch}
+
+
+def predict(model: nn.Module, X: np.ndarray, device: torch.device = None) -> np.ndarray:
+    """Scaled model outputs for scaled input sequences."""
+    if device is None:
+        device = get_device()
+    model = model.to(device).eval()
     with torch.no_grad():
-        preds_scaled = model(X_va).cpu().numpy()
-
-    val_true_scaled = y_val  # already numpy
-
-    # Inverse-transform to real price units before computing metrics
-    val_preds = target_scaler.inverse_transform(
-        preds_scaled.reshape(-1, 1)
-    ).ravel()
-    val_true = target_scaler.inverse_transform(
-        val_true_scaled.reshape(-1, 1)
-    ).ravel()
-
-    metrics = compute_all(val_true, val_preds)
-
-    return {
-        'val_rmse':   metrics['rmse'],
-        'val_mae':    metrics['mae'],
-        'val_mape':   metrics['mape'],
-        'val_da':     metrics['da'],
-        'val_preds':  val_preds,
-        'val_true':   val_true,
-        'best_epoch': best_epoch,
-    }
+        return model(torch.tensor(X, dtype=torch.float32).to(device)).cpu().numpy()

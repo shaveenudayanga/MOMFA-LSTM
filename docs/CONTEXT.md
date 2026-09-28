@@ -1,9 +1,10 @@
 # CONTEXT.md
 # MOMFA-LSTM: Complete Project Context
 
-> This file is the single source of truth for any Claude session working on this project.
-> Read this before touching any code. Do not paraphrase the proposal - this IS the spec.
-> Last updated: 2026-06-16
+> Short orientation summary. NOT authoritative: the specification is
+> MOMFA_research_proposal.txt (with its [DECIDED] notes), then docs/DECISIONS.md.
+> Start every session with docs/STATUS.md.
+> Last updated: 2026-09-29
 
 ---
 
@@ -60,7 +61,7 @@ x = [ b1, b2, ..., b25 | h1, h2, h3, h4, h5, h6 ]
 |---|---|---|
 | h1 | Number of layers | 1 to 3 |
 | h2 | Units per layer | 16 to 256 |
-| h3 | Learning rate | 0.0001 to 0.01 |
+| h3 | Learning rate | 0.0001 to 0.01 (decoded on a log scale, spec 9.6) |
 | h4 | Dropout rate | 0.10 to 0.50 |
 | h5 | Lookback window | 5 to 60 days |
 | h6 | Optimizer | Adam / RMSprop / SGD (mapped from continuous) |
@@ -154,14 +155,20 @@ Dimensions 26-31 use standard update, clipped to search ranges.
 - No pooled or global model
 
 ### 4.3 Target variable
-- Next-day closing price level (regression, not returns)
-- Normalized to [0,1] via Min-Max scaling
+- Research target: next-day closing price (all metrics are on this price, in LKR)
+- What the LSTM learns: the next-day return Close[t+1]/Close[t] - 1, Min-Max scaled;
+  the forecast price is Close[t] x (1 + predicted return). See DECISIONS.md D-009 and
+  spec 9.2.1 (predicting the price level failed on the test period, FINDINGS F-001)
 
-### 4.4 Preprocessing
-1. Forward fill missing values (public holidays, trading suspensions)
-2. Min-Max normalization - fit on training window ONLY at each fold
-3. Same scaler applied to validation and test sets separately
-4. All metrics computed on inverse-transformed values
+### 4.4 Preprocessing and split
+1. Forward fill missing business days (public holidays, trading suspensions)
+2. Chronological split: first 80% = development period, last 20% (250 days) = final test
+   period, never seen by any optimizer (spec 9.1)
+3. Min-Max scaling fit on the training rows of each fold ONLY, applied to validation/test
+4. Every candidate is scored on the same dates whatever its lookback (spec 9.3)
+5. Final model: trained on the development period minus its last 126 days, early-stopped on
+   those 126 days, scored once on the test period (spec 9.1.1, D-008)
+6. All metrics computed on prices in LKR
 
 ### 4.5 Technical Indicators (25 total)
 
@@ -179,12 +186,12 @@ OBV, MFI, VWAP, Volume SMA, Volume Rate of Change, Chaikin Money Flow
 
 Library: `pandas-ta`
 
-Status: **COMPLETE** (features calculated, verified)
+Status: DONE. VWAP is a 20-day rolling VWAP (spec 9.5).
 
 ### 4.6 Validation Strategy
-Walk-forward validation with expanding training windows.
-- Train on past, test on future only - no data leakage
-- Final metrics = average across all folds
+Walk-forward validation with expanding training windows inside the development period
+(5 folds x 126 days). Fitness f1 = mean validation RMSE over the folds. Final reported
+metrics come from the untouched test period.
 
 ---
 
@@ -196,7 +203,7 @@ Walk-forward validation with expanding training windows.
 | Batch size | 32 |
 | Early stopping patience | 10 epochs (on validation RMSE) |
 | Loss function | MSE |
-| Fitness caching | Yes - cache on real-valued position vector, return stored phenotype |
+| Fitness caching | Yes - keyed on the decoded phenotype (mask + discretised hyperparameters), D-003 |
 
 ---
 
@@ -233,7 +240,9 @@ All baselines use the same fixed training protocol (Section 5 above).
 | Directional Accuracy (DA) | sign(y_hat_t - y_{t-1}) == sign(y_t - y_{t-1}) | Computed on inverse-transformed values |
 | Hypervolume | Volume dominated by Pareto front vs. reference point | MOMFA only |
 
-Hypervolume reference point: worst observed RMSE and worst observed parameter count across all runs.
+Hypervolume: objectives normalised to [0,1] with global min/max, reference point (1.1, 1.1) (spec 9.11).
+RMSE and MAE are never averaged across tickers (prices differ ~15x); cross-ticker summaries use
+RMSE/MAE divided by the random-walk value, MAPE and DA.
 
 ### 7.2 Statistical Testing
 - 30 independent runs per method, different random seeds
@@ -290,4 +299,4 @@ These were deliberate decisions after audit and Prof. Fernando review:
 - **Walk-forward validation** - not k-fold, not train-test split
 - **30 seeds** - do not reduce for speed; this is the statistical validity claim
 - **Per-ticker models** - not pooled
-- **Fitness caching keyed on real-valued vector** - not on binary mask (see D-002)
+- **Fitness caching keyed on the decoded phenotype** - not on the real-valued vector (see D-002, D-003)

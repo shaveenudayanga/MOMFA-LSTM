@@ -1,58 +1,83 @@
-"""Thesis-quality visualizations for MOMFA-LSTM.
+"""Thesis figures for MOMFA-LSTM (spec 11).
 
-All functions save a PNG to results/figures/ and return the file path.
-Call plt.show() afterwards if running interactively in a notebook.
-
-Usage:
-    from utils.visualizer import plot_fold_splits, plot_rmse_comparison, ...
+Every function draws one figure, saves a PNG under results/figures/ and returns
+its path. The functions take plain arrays and dicts; plots/make_figures.py reads
+the saved result files and calls them, so every figure can be regenerated from
+disk (spec 10).
 """
 
 import os
-import json
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
+from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 import seaborn as sns
 
+from config import TICKERS, METHOD_LABELS
+
 # ── Style ─────────────────────────────────────────────────────────────────────
+# Ink and grid are neutral so the data carries the colour.
+
+INK = '#0b0b0b'
+INK_2 = '#52514e'
+MUTED = '#8a8984'
+GRID = '#e6e5e0'
+
 plt.rcParams.update({
-    'figure.dpi':      150,
-    'font.size':       11,
-    'axes.titlesize':  12,
-    'axes.labelsize':  11,
-    'legend.fontsize': 10,
-    'axes.spines.top':    False,
-    'axes.spines.right':  False,
+    'figure.dpi':        150,
+    'savefig.dpi':       200,
+    'font.size':         10,
+    'axes.titlesize':    11.5,
+    'axes.titleweight':  'bold',
+    'axes.titlelocation': 'left',
+    'axes.labelsize':    10,
+    'axes.labelcolor':   INK_2,
+    'axes.edgecolor':    MUTED,
+    'axes.linewidth':    0.8,
+    'axes.spines.top':   False,
+    'axes.spines.right': False,
+    'axes.grid':         True,
+    'axes.axisbelow':    True,
+    'grid.color':        GRID,
+    'grid.linewidth':    0.6,
+    'xtick.color':       INK_2,
+    'ytick.color':       INK_2,
+    'text.color':        INK,
+    'legend.fontsize':   9,
+    'legend.frameon':    False,
+    'figure.facecolor':  'white',
+    'savefig.facecolor': 'white',
 })
 
-FIGURES_DIR = os.path.join(
-    os.path.dirname(__file__), '..', '..', 'results', 'figures'
-)
-
-TICKERS = [
-    'JKH.N0000', 'COMB.N0000', 'DIAL.N0000', 'HNB.N0000',  'LOLC.N0000',
-    'SAMP.N0000', 'NTB.N0000', 'HHL.N0000',  'DIST.N0000', 'HAYL.N0000',
-]
-
-METHOD_LABELS = {
-    'random_walk':    'Random Walk',
-    'vanilla_lstm':   'Vanilla LSTM',
-    'grid_search':    'Grid Search',
-    'pso_lstm':       'PSO-LSTM',
-    'ga_lstm':        'GA-LSTM',
-    'gwo_lstm':       'GWO-LSTM',
-    'woa_lstm':       'WOA-LSTM',
-    'sequential_fa':  'Sequential FA',
-    'momfa':          'MOMFA (ours)',
+# Fixed colour per method (validated categorical palette, slot order).
+# Random walk is the reference, so it stays neutral grey.
+METHOD_COLORS = {
+    'momfa':         '#2a78d6',
+    'vanilla_lstm':  '#eb6834',
+    'grid_search':   '#1baf7a',
+    'pso_lstm':      '#eda100',
+    'ga_lstm':       '#e87ba4',
+    'gwo_lstm':      '#008300',
+    'woa_lstm':      '#4a3aa7',
+    'sequential_fa': '#e34948',
+    'random_walk':   MUTED,
 }
 
-FEATURE_COLS = [
-    'RSI', 'MACD', 'MACD Signal', 'Stoch %K', 'Stoch %D', 'ROC', 'Williams %R',
-    'EMA9', 'EMA21', 'EMA50', 'SMA20', 'ADX', 'CCI', 'Parabolic SAR',
-    'BB Upper', 'BB Lower', 'BB Width', 'ATR', 'Std Dev',
-    'OBV', 'MFI', 'VWAP', 'Vol SMA', 'Vol ROC', 'CMF',
-]
+# Sequential (magnitude) and diverging (better / worse than a midpoint) maps
+SEQUENTIAL = LinearSegmentedColormap.from_list(
+    'seq_blue', ['#cde2fb', '#86b6ef', '#3987e5', '#1c5cab', '#0d366b'])
+DIVERGING = LinearSegmentedColormap.from_list(
+    'div_blue_red', ['#184f95', '#6da7ec', '#f0efec', '#ef8a89', '#b3302f'])
 
+INDICATOR_NAMES = [
+    'RSI', 'MACD', 'MACD signal', 'Stoch %K', 'Stoch %D', 'ROC', 'Williams %R',
+    'EMA9', 'EMA21', 'EMA50', 'SMA20', 'ADX', 'CCI', 'Parabolic SAR',
+    'BB upper', 'BB lower', 'BB width', 'ATR', 'Std dev',
+    'OBV', 'MFI', 'VWAP', 'Volume SMA', 'Volume ROC', 'CMF',
+]
+FEATURE_COLS = INDICATOR_NAMES   # used by the MOMFA feature-selection heatmap
 FEATURE_GROUPS = {
     'Momentum (7)':   list(range(0,  7)),
     'Trend (7)':      list(range(7,  14)),
@@ -60,16 +85,15 @@ FEATURE_GROUPS = {
     'Volume (6)':     list(range(19, 25)),
 }
 
-VAL_COLOURS = ['#e74c3c', '#e67e22', '#f1c40f', '#2ecc71', '#3498db']
+FIGURES_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'results', 'figures')
 
 
 def _save(fig, subdir: str, filename: str) -> str:
     out_dir = os.path.join(FIGURES_DIR, subdir)
     os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, filename)
+    path = os.path.normpath(os.path.join(out_dir, filename))
     fig.savefig(path, bbox_inches='tight')
     plt.close(fig)
-    print(f'[visualizer] Saved → {path}')
     return path
 
 
@@ -77,159 +101,294 @@ def _ticker_label(ticker: str) -> str:
     return ticker.replace('.N0000', '')
 
 
-# ── F-01: Fold splits ─────────────────────────────────────────────────────────
+def _label(method: str) -> str:
+    return METHOD_LABELS.get(method, method)
 
-def plot_fold_splits(df, ticker: str, n_splits: int = 5, val_size: int = 126) -> str:
-    """F-01: Stock price time series with walk-forward validation windows.
 
-    Args:
-        df:     DataFrame from preprocessor.load_ticker() (has 'target' column).
-        ticker: Ticker string e.g. 'JKH.N0000'.
-    """
-    prices = df['target'].values
-    dates  = df.index
-    n      = len(prices)
-    min_train = n - n_splits * val_size
+def _date_axis(ax):
+    locator = mdates.AutoDateLocator()
+    ax.xaxis.set_major_locator(locator)
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
 
-    fig, ax = plt.subplots(figsize=(12, 4))
-    ax.plot(dates, prices, color='#2c3e50', linewidth=0.8, label='Close price')
 
-    for i in range(n_splits):
-        train_end = min_train + i * val_size
-        val_end   = train_end + val_size
-        ax.axvspan(dates[train_end], dates[val_end - 1],
-                   alpha=0.25, color=VAL_COLOURS[i],
-                   label=f'Val fold {i+1}')
+def _annotated_heatmap(ax, matrix, row_labels, col_labels, cmap, norm, fmt):
+    """Heatmap with the value written in each cell, ink chosen for contrast."""
+    image = ax.imshow(matrix, cmap=cmap, norm=norm, aspect='auto')
+    ax.set_xticks(range(len(col_labels)), col_labels)
+    ax.set_yticks(range(len(row_labels)), row_labels)
+    ax.tick_params(length=0)
+    ax.grid(False)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    for i in range(matrix.shape[0]):
+        for j in range(matrix.shape[1]):
+            value = matrix[i, j]
+            if np.isnan(value):
+                continue
+            r, g, b, _ = cmap(norm(value))
+            luminance = 0.299 * r + 0.587 * g + 0.114 * b
+            ax.text(j, i, fmt.format(value), ha='center', va='center', fontsize=9,
+                    color='white' if luminance < 0.5 else INK)
+    return image
 
-    ax.set_title(f'Walk-Forward Validation Splits - {_ticker_label(ticker)}')
-    ax.set_xlabel('Date')
+
+# ── F1: Development folds and final test period ──────────────────────────────
+
+def plot_fold_splits(df, ticker: str) -> str:
+    """Close price with the 5 walk-forward validation windows and the test period (spec 11 F1)."""
+    from preprocessor import split_dev_test, fold_boundaries
+
+    dev_df, test_df = split_dev_test(df)
+    dates = df.index
+    fold_colors = ['#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#1c5cab']
+
+    fig, ax = plt.subplots(figsize=(11, 3.6))
+    for i, (train_end, val_end) in enumerate(fold_boundaries(len(dev_df))):
+        ax.axvspan(dates[train_end], dates[val_end - 1], color=fold_colors[i],
+                   alpha=0.55, lw=0, label=f'Validation fold {i + 1}')
+    ax.axvspan(test_df.index[0], test_df.index[-1], facecolor='none', edgecolor=MUTED,
+               hatch='///', lw=0, label='Final test period (never seen by optimizers)')
+    ax.plot(dates, df['target'].values, color=INK, lw=1.1)
+
+    ax.set_title(f'{_ticker_label(ticker)}: development folds and final test period')
     ax.set_ylabel('Close price (LKR)')
-    ax.legend(loc='upper left', ncol=3, framealpha=0.7)
-    fig.tight_layout()
-
+    _date_axis(ax)
+    ax.legend(loc='upper left', ncol=3)
     return _save(fig, 'data', f'fold_splits_{_ticker_label(ticker)}.png')
 
 
-# ── F-02: Indicator correlation heatmap ───────────────────────────────────────
+# ── F2: Indicator correlation ────────────────────────────────────────────────
 
-def plot_indicator_correlation(df, ticker: str = 'JKH') -> str:
-    """F-02: Pearson correlation matrix of all 25 technical indicators."""
-    raw_cols = [c for c in df.columns if c != 'target']
-    corr = df[raw_cols].corr()
+def plot_indicator_correlation(df, ticker: str) -> str:
+    """Pearson correlation of the 25 indicators; shows redundancy (spec 11 F2)."""
+    from preprocessor import FEATURE_COLS as indicator_cols
 
-    fig, ax = plt.subplots(figsize=(13, 11))
+    corr = df[indicator_cols].corr().values
     mask = np.triu(np.ones_like(corr, dtype=bool), k=1)
-    sns.heatmap(
-        corr,
-        ax=ax,
-        mask=mask,
-        cmap='RdYlGn',
-        center=0,
-        vmin=-1, vmax=1,
-        linewidths=0.3,
-        xticklabels=FEATURE_COLS,
-        yticklabels=FEATURE_COLS,
-        annot=False,
-        cbar_kws={'label': 'Pearson r'},
-    )
-    ax.set_title(f'Technical Indicator Correlation Matrix - {ticker}', pad=14)
-    plt.xticks(rotation=45, ha='right', fontsize=8)
-    plt.yticks(rotation=0, fontsize=8)
-    fig.tight_layout()
 
-    return _save(fig, 'data', 'indicator_correlation.png')
+    fig, ax = plt.subplots(figsize=(10.5, 9))
+    sns.heatmap(corr, ax=ax, mask=mask, cmap=DIVERGING, center=0, vmin=-1, vmax=1,
+                linewidths=0.4, linecolor='white', square=True,
+                xticklabels=INDICATOR_NAMES, yticklabels=INDICATOR_NAMES,
+                cbar_kws={'label': 'Pearson correlation', 'shrink': 0.7})
+    ax.set_title(f'{_ticker_label(ticker)}: correlation between the 25 technical indicators')
+    ax.tick_params(length=0)
+    plt.xticks(rotation=60, ha='right', fontsize=8)
+    plt.yticks(fontsize=8)
+    return _save(fig, 'data', f'indicator_correlation_{_ticker_label(ticker)}.png')
 
 
-# ── F-03: RMSE bar comparison ─────────────────────────────────────────────────
+# ── F3: Test-period predictions ──────────────────────────────────────────────
 
-def plot_rmse_comparison(all_results: dict, methods_order: list = None) -> str:
-    """F-03: Grouped bar chart - mean RMSE per method, averaged across tickers.
+def plot_test_predictions(ticker: str, dates, actual: np.ndarray,
+                          predictions: dict, zoom_days: int = 30) -> str:
+    """Actual vs predicted close on the test period, with a zoomed last-30-day panel (spec 11 F3).
 
     Args:
-        all_results: {method_name: {ticker: {rmse_mean, rmse_std, ...}}}
-        methods_order: list of method keys in display order.
+        predictions: {method: predicted closes}, one value per test date.
     """
-    if methods_order is None:
-        methods_order = list(all_results.keys())
+    fig, (full, zoom) = plt.subplots(
+        2, 1, figsize=(11, 6.4), gridspec_kw={'height_ratios': [1.6, 1]})
 
-    labels, means, stds = [], [], []
-    for method in methods_order:
-        if method not in all_results:
-            continue
-        ticker_data = all_results[method]
-        rmse_vals = [
-            np.mean(ticker_data[t]['rmse_runs'])
-            for t in TICKERS if t in ticker_data
-        ]
-        if not rmse_vals:
-            continue
-        labels.append(METHOD_LABELS.get(method, method))
-        means.append(np.mean(rmse_vals))
-        stds.append(np.std(rmse_vals))
+    for ax, start in ((full, 0), (zoom, len(actual) - zoom_days)):
+        ax.plot(dates[start:], actual[start:], color=INK, lw=1.6, label='Actual close')
+        for method, preds in predictions.items():
+            style = {'ls': '--', 'lw': 1.1} if method == 'random_walk' else {'lw': 1.3}
+            ax.plot(dates[start:], preds[start:], color=METHOD_COLORS[method],
+                    label=_label(method), **style)
+        ax.set_ylabel('Close price (LKR)')
+        _date_axis(ax)
 
-    colours = ['#95a5a6'] * (len(labels) - 1) + ['#e74c3c']  # MOMFA in red
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-    x = np.arange(len(labels))
-    bars = ax.bar(x, means, yerr=stds, color=colours, width=0.6,
-                  capsize=4, error_kw={'linewidth': 1.2})
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=25, ha='right')
-    ax.set_ylabel('Mean RMSE (LKR)')
-    ax.set_title('RMSE Comparison - All Methods (averaged across 10 CSE tickers)')
-
-    # Annotate bars with value
-    for bar, mean in zip(bars, means):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
-                f'{mean:.3f}', ha='center', va='bottom', fontsize=8)
-
+    full.set_title(f'{_ticker_label(ticker)}: next-day close on the final test period')
+    zoom.set_title(f'Last {zoom_days} trading days (zoomed)', fontweight='normal', color=INK_2)
+    full.legend(loc='upper left', ncol=len(predictions) + 1)
     fig.tight_layout()
-    return _save(fig, 'baselines', 'rmse_bar_comparison.png')
+    return _save(fig, 'predictions', f'test_predictions_{_ticker_label(ticker)}.png')
 
 
-# ── F-04: RMSE box plots ──────────────────────────────────────────────────────
+# ── F4: Error distribution ───────────────────────────────────────────────────
 
-def plot_rmse_boxplots(all_results: dict, methods_order: list = None) -> str:
-    """F-04: Box plots of 30-run RMSE distributions per method."""
-    if methods_order is None:
-        methods_order = list(all_results.keys())
+def plot_error_distribution(errors: dict) -> str:
+    """Distribution of test-period percentage errors per method, pooled over tickers (spec 11 F4).
 
-    plot_data, labels = [], []
-    for method in methods_order:
-        if method not in all_results:
-            continue
-        ticker_data = all_results[method]
-        # Collect per-seed averages across tickers
-        per_seed = []
-        n_seeds = len(next(iter(ticker_data.values()))['rmse_runs'])
-        for seed in range(n_seeds):
-            seed_vals = [
-                ticker_data[t]['rmse_runs'][seed]
-                for t in TICKERS if t in ticker_data
-                and seed < len(ticker_data[t]['rmse_runs'])
-            ]
-            if seed_vals:
-                per_seed.append(np.mean(seed_vals))
-        if per_seed:
-            plot_data.append(per_seed)
-            labels.append(METHOD_LABELS.get(method, method))
+    Args:
+        errors: {method: array of (predicted - actual) / actual * 100}
+    """
+    bins = np.arange(-6, 6.25, 0.25)
+    fig, ax = plt.subplots(figsize=(9, 4))
+    for method, err in errors.items():
+        clipped = np.clip(err, bins[0], bins[-1])
+        ax.hist(clipped, bins=bins, density=True, histtype='step', lw=1.6,
+                color=METHOD_COLORS[method],
+                label=f'{_label(method)}  (median |error| {np.median(np.abs(err)):.2f}%)')
+    ax.axvline(0, color=INK_2, lw=0.8)
+    ax.set_xlabel('Prediction error, % of actual close (values beyond ±6% shown at the edge)')
+    ax.set_ylabel('Density')
+    ax.set_title('Test-period prediction errors, all 10 tickers pooled')
+    ax.legend(loc='upper right')
+    return _save(fig, 'comparison', 'error_distribution.png')
 
-    fig, ax = plt.subplots(figsize=(11, 5))
-    bp = ax.boxplot(plot_data, patch_artist=True, notch=False,
-                    medianprops=dict(color='black', linewidth=2))
 
-    colours = ['#bdc3c7'] * (len(labels) - 1) + ['#e74c3c']
-    for patch, colour in zip(bp['boxes'], colours):
-        patch.set_facecolor(colour)
-        patch.set_alpha(0.7)
+# ── F5: RMSE / MAE relative to random walk (30 runs) ─────────────────────────
 
-    ax.set_xticks(range(1, len(labels) + 1))
-    ax.set_xticklabels(labels, rotation=25, ha='right')
-    ax.set_ylabel('Mean RMSE across tickers (LKR)')
-    ax.set_title('30-Run RMSE Distribution - All Methods')
+METRIC_NAMES = {'rmse': 'RMSE', 'mae': 'MAE'}
+
+
+def plot_vs_random_walk_boxplots(ratios: dict, metric: str) -> str:
+    """Test RMSE or MAE of every run divided by random walk's, per ticker (spec 11 F5, check S1).
+
+    Dividing by random walk puts tickers with very different prices on one scale.
+    Below 1.0 = better than random walk.
+
+    Args:
+        ratios: {method: {ticker: [one ratio per seed]}}
+        metric: 'rmse' or 'mae'
+    """
+    name = METRIC_NAMES[metric]
+    methods = list(ratios)
+    tickers = [t for t in TICKERS if any(t in ratios[m] for m in methods)]
+    width = 0.8 / len(methods)
+
+    fig, ax = plt.subplots(figsize=(11, 4.4))
+    for k, method in enumerate(methods):
+        positions = [i + (k - (len(methods) - 1) / 2) * width for i in range(len(tickers))]
+        data = [ratios[method].get(t, [np.nan]) for t in tickers]
+        box = ax.boxplot(data, positions=positions, widths=width * 0.8, patch_artist=True,
+                         showfliers=True, medianprops={'color': INK, 'lw': 1.2},
+                         whiskerprops={'color': INK_2, 'lw': 0.8},
+                         capprops={'color': INK_2, 'lw': 0.8},
+                         flierprops={'marker': 'o', 'ms': 3, 'mec': INK_2, 'mfc': 'none'})
+        for patch in box['boxes']:
+            patch.set(facecolor=METHOD_COLORS[method], edgecolor=INK_2, lw=0.8, alpha=0.85)
+        box['boxes'][0].set_label(f'{_label(method)} (30 runs)')
+
+    ax.axhline(1.0, color=INK_2, ls='--', lw=1, label='Random walk = 1.0')
+    ax.set_xticks(range(len(tickers)), [_ticker_label(t) for t in tickers])
+    ax.set_ylabel(f'Test {name} ÷ random-walk {name}')
+    ax.set_title(f'Test {name} relative to random walk (below 1.0 = beats random walk)')
+    ax.legend(loc='upper left')
+    return _save(fig, 'comparison', f'{metric}_vs_random_walk_boxplots.png')
+
+
+def plot_vs_random_walk_heatmap(mean_ratios: dict, metric: str) -> str:
+    """Mean test RMSE or MAE ÷ random walk's, tickers x methods; blue beats random walk, red loses.
+
+    Args:
+        mean_ratios: {method: {ticker: mean ratio over seeds}}
+        metric:      'rmse' or 'mae'
+    """
+    name = METRIC_NAMES[metric]
+    methods = list(mean_ratios)
+    matrix = np.array([[mean_ratios[m].get(t, np.nan) for m in methods] for t in TICKERS])
+    spread = max(0.25, np.nanmax(np.abs(matrix - 1)))
+    norm = TwoSlopeNorm(vcenter=1.0, vmin=1 - spread, vmax=1 + spread)
+
+    fig, ax = plt.subplots(figsize=(1.6 + 1.4 * len(methods), 5.6))
+    image = _annotated_heatmap(ax, matrix, [_ticker_label(t) for t in TICKERS],
+                               [_label(m) for m in methods], DIVERGING, norm, '{:.2f}')
+    fig.colorbar(image, ax=ax, shrink=0.8, label=f'{name} ÷ random-walk {name}')
+    ax.set_title(f'Test {name} vs random walk\n(< 1.00 blue = better, > 1.00 red = worse)')
+    return _save(fig, 'comparison', f'{metric}_vs_random_walk_heatmap.png')
+
+
+# ── All four metrics in one figure ───────────────────────────────────────────
+
+def plot_metric_overview(values: dict, spreads: dict) -> str:
+    """The four accuracy measures of spec 4.B side by side, per ticker and method.
+
+    RMSE and MAE are shown divided by random walk (they are in LKR); MAPE and DA are
+    already percentages. Error bars show ±1 std over the 30 runs.
+
+    Args:
+        values:  {metric: {method: {ticker: mean}}} for metric in rmse, mae, mape, da
+        spreads: same layout, std over seeds (0 for random walk)
+    """
+    panels = [
+        ('rmse', 'RMSE ÷ random-walk RMSE', 'lower is better', 1.0),
+        ('mae',  'MAE ÷ random-walk MAE',   'lower is better', 1.0),
+        ('mape', 'MAPE (%)',                'lower is better', None),
+        ('da',   'Directional accuracy (%)', 'higher is better', 50.0),
+    ]
+    x = np.arange(len(TICKERS))
+    fig, axes = plt.subplots(2, 2, figsize=(13, 7.6), sharex=True)
+
+    for ax, (metric, ylabel, direction, reference) in zip(axes.flat, panels):
+        methods = list(values[metric])
+        width = 0.8 / len(methods)
+        for k, method in enumerate(methods):
+            means = np.array([values[metric][method].get(t, np.nan) for t in TICKERS])
+            stds = np.array([spreads[metric][method].get(t, 0.0) for t in TICKERS])
+            ax.bar(x + (k - (len(methods) - 1) / 2) * width, means, width=width * 0.92,
+                   yerr=None if np.allclose(stds, 0) else stds, capsize=2,
+                   error_kw={'lw': 0.8, 'ecolor': INK_2},
+                   color=METHOD_COLORS[method], edgecolor='white', lw=1, label=_label(method))
+        if reference is not None:
+            label = 'Random walk = 1.0' if reference == 1.0 else '50% (coin flip)'
+            ax.axhline(reference, color=INK_2, ls='--', lw=1, label=label)
+        if metric == 'da':
+            ax.set_ylim(0, 100)
+        ax.set_title(f'{ylabel}  ({direction})', fontsize=10.5)
+        ax.set_xticks(x, [_ticker_label(t) for t in TICKERS], fontsize=8.5)
+        ax.legend(loc='upper left', fontsize=8)
+
+    fig.suptitle('Test-period accuracy: RMSE, MAE, MAPE and directional accuracy',
+                 x=0.01, ha='left', fontweight='bold', fontsize=12)
     fig.tight_layout()
+    return _save(fig, 'comparison', 'metric_overview.png')
 
-    return _save(fig, 'baselines', 'rmse_boxplots.png')
+
+# ── F6: MAPE heatmap ─────────────────────────────────────────────────────────
+
+def plot_mape_heatmap(mape: dict) -> str:
+    """Mean test MAPE (%), tickers x methods (spec 11 F6).
+
+    Args:
+        mape: {method: {ticker: mean MAPE}}
+    """
+    methods = list(mape)
+    matrix = np.array([[mape[m].get(t, np.nan) for m in methods] for t in TICKERS])
+    norm = plt.Normalize(vmin=0, vmax=np.nanmax(matrix))
+
+    fig, ax = plt.subplots(figsize=(1.6 + 1.4 * len(methods), 5.6))
+    image = _annotated_heatmap(ax, matrix, [_ticker_label(t) for t in TICKERS],
+                               [_label(m) for m in methods], SEQUENTIAL, norm, '{:.2f}%')
+    fig.colorbar(image, ax=ax, shrink=0.8, label='MAPE (%)')
+    ax.set_title('Test-period MAPE (%) — lower is better')
+    return _save(fig, 'comparison', 'mape_heatmap.png')
+
+
+# ── F7: Directional accuracy ─────────────────────────────────────────────────
+
+def plot_directional_accuracy(da: dict, majority_rate: dict, flat_share: dict) -> str:
+    """Test directional accuracy per ticker and method, against 50% and the
+    "always predict the majority direction" rate (spec 11 F7, check S3).
+
+    Args:
+        da:            {method: {ticker: mean DA as a fraction}}
+        majority_rate: {ticker: DA of always predicting the more common direction}
+        flat_share:    {ticker: share of test days with no price change}
+    """
+    methods = list(da)
+    width = 0.8 / len(methods)
+    x = np.arange(len(TICKERS))
+
+    fig, ax = plt.subplots(figsize=(11, 4.4))
+    for k, method in enumerate(methods):
+        values = [100 * da[method].get(t, np.nan) for t in TICKERS]
+        ax.bar(x + (k - (len(methods) - 1) / 2) * width, values, width=width * 0.92,
+               color=METHOD_COLORS[method], edgecolor='white', lw=1, label=_label(method))
+
+    ax.scatter(x, [100 * majority_rate[t] for t in TICKERS], marker='_', s=420, lw=2.2,
+               color=INK, zorder=3, label='Always predict majority direction')
+    ax.axhline(50, color=INK_2, ls='--', lw=1, label='50% (coin flip)')
+    ax.set_xticks(x, [f'{_ticker_label(t)}\n{100 * flat_share[t]:.0f}% flat'
+                      for t in TICKERS])
+    ax.set_ylim(0, 100)
+    ax.set_ylabel('Directional accuracy (%)')
+    ax.set_title('Test-period directional accuracy '
+                 '(flat days = no price change, always counted as a miss)')
+    ax.legend(loc='upper left', ncol=len(methods) + 2)
+    return _save(fig, 'comparison', 'directional_accuracy.png')
 
 
 # ── F-05: Wilcoxon p-value heatmap ───────────────────────────────────────────
@@ -370,27 +529,3 @@ def plot_feature_selection_heatmap(selection_freq: np.ndarray) -> str:
     return _save(fig, 'momfa', 'feature_selection_heatmap.png')
 
 
-# ── F-09: Predictions vs actual ───────────────────────────────────────────────
-
-def plot_predictions(y_true: np.ndarray, y_pred: np.ndarray,
-                     ticker: str, fold: int = 4) -> str:
-    """F-09: Best MOMFA prediction vs actual close price.
-
-    Args:
-        y_true: Actual close prices (inverse-transformed, LKR).
-        y_pred: Predicted close prices (inverse-transformed, LKR).
-        ticker: Ticker string.
-        fold:   Which validation fold is shown (for the title).
-    """
-    fig, ax = plt.subplots(figsize=(11, 4))
-    steps = np.arange(len(y_true))
-    ax.plot(steps, y_true, color='#2c3e50', linewidth=1.5, label='Actual')
-    ax.plot(steps, y_pred, color='#e74c3c', linewidth=1.2,
-            linestyle='--', label='MOMFA prediction')
-    ax.set_xlabel('Trading day (validation fold)')
-    ax.set_ylabel('Close price (LKR)')
-    ax.set_title(f'Predicted vs Actual - {_ticker_label(ticker)} (Fold {fold + 1})')
-    ax.legend()
-    fig.tight_layout()
-
-    return _save(fig, 'predictions', f'predictions_{_ticker_label(ticker)}.png')

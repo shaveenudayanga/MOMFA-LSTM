@@ -23,9 +23,9 @@ from joblib import Parallel, delayed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+from evaluation import cross_validate
 from model import build_model, count_parameters
-from train import train_fold, get_device
-from preprocessor import make_sequences
+from train import get_device
 from utils.seed import set_seed
 from firefly.levy import levy_flight
 from firefly.pareto import ParetoArchive
@@ -65,23 +65,19 @@ HP_HI = np.array([3,      256,    0.01,   0.50,  60,  1.0])
 # Bin dim init range: sigmoid(-4)≈0.018, sigmoid(4)≈0.982 → good initial diversity
 BIN_INIT_LO, BIN_INIT_HI = -4.0, 4.0
 
-# Training protocol (CONTEXT.md §5)
-MAX_EPOCHS = 50
-BATCH_SIZE = 32
-PATIENCE   = 10
-
 
 # ── Encoding / decoding ───────────────────────────────────────────────────────
 
 def _decode_hyperparams(h_norm: np.ndarray) -> dict:
     """Map normalised [0,1]^6 to actual hyperparameter values."""
-    h = HP_LO + np.clip(h_norm, 0.0, 1.0) * (HP_HI - HP_LO)
+    u = np.clip(h_norm, 0.0, 1.0)
+    h = HP_LO + u * (HP_HI - HP_LO)
     opt_val   = float(h[5])
     optimizer = 'adam' if opt_val < 1/3 else ('rmsprop' if opt_val < 2/3 else 'sgd')
     return dict(
         n_layers = int(round(float(h[0]))),
         units    = int(round(float(h[1]))),
-        lr       = float(h[2]),
+        lr       = float(10 ** (-4 + 2 * u[2])),   # log scale over 1e-4..1e-2 (spec 9.6)
         dropout  = float(round(float(h[3]), 2)),
         lookback = int(round(float(h[4]))),
         optimizer= optimizer,
@@ -119,7 +115,7 @@ def make_cache_key(mask: tuple, hp: dict) -> tuple:
         mask,
         hp['n_layers'],
         hp['units'],
-        round(hp['lr'],       6),
+        float(f"{hp['lr']:.6g}"),   # 6 significant figures (lr spans 1e-4..1e-2)
         round(hp['dropout'],  2),
         hp['lookback'],
         hp['optimizer'],
@@ -137,33 +133,12 @@ def evaluate_phenotype(mask: tuple, hp: dict, folds: list) -> tuple:
     Returns:
         (mean_val_rmse, n_trainable_params)
     """
-    feat_idx   = [i for i, b in enumerate(mask) if b == 1]
-    n_features = len(feat_idx)
-    rmse_list  = []
-
-    for fold in folds:
-        X_tr, y_tr = make_sequences(
-            fold['X_train'][:, feat_idx], fold['y_train'], hp['lookback']
-        )
-        X_va, y_va = make_sequences(
-            fold['X_val'][:,   feat_idx], fold['y_val'],   hp['lookback']
-        )
-        model  = build_model(n_features, hp['n_layers'], hp['units'], hp['dropout'])
-        result = train_fold(
-            model, X_tr, y_tr, X_va, y_va,
-            target_scaler  = fold['target_scaler'],
-            lr             = hp['lr'],
-            optimizer_name = hp['optimizer'],
-            max_epochs     = MAX_EPOCHS,
-            batch_size     = BATCH_SIZE,
-            patience       = PATIENCE,
-        )
-        rmse_list.append(result['val_rmse'])
-
+    feat_idx = [i for i, b in enumerate(mask) if b == 1]
+    rmse = cross_validate(folds, hp, feat_idx)['rmse']
     n_params = count_parameters(
-        build_model(n_features, hp['n_layers'], hp['units'], hp['dropout'])
+        build_model(len(feat_idx), hp['n_layers'], hp['units'], hp['dropout'])
     )
-    return float(np.mean(rmse_list)), int(n_params)
+    return rmse, int(n_params)
 
 
 def _evaluate_population(
@@ -219,7 +194,7 @@ def run_momfa(
     """One complete MOMFA run. Returns the final Pareto archive.
 
     Args:
-        folds:       Output of preprocessor.get_folds() for one ticker.
+        folds:       preprocessor.get_folds() on one ticker's development period.
         seed:        Random seed for this run (one of 30 independent runs).
         n_fireflies: Population size N (default 20).
         n_iter:      Iterations T (default 30).

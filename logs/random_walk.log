@@ -1,0 +1,12 @@
+[Random Walk] JKH.N0000             RMSE 0.2248  |  MAE 0.1406  |  MAPE 0.82%  |  DA 0.2096
+[Random Walk] COMB.N0000            RMSE 1.4755  |  MAE 0.9501  |  MAPE 1.23%  |  DA 0.1792
+[Random Walk] DIAL.N0000            RMSE 0.1577  |  MAE 0.1054  |  MAPE 1.06%  |  DA 0.3504
+[Random Walk] HNB.N0000             RMSE 2.8848  |  MAE 1.9002  |  MAPE 1.27%  |  DA 0.1904
+[Random Walk] LOLC.N0000            RMSE 9.1025  |  MAE 5.7286  |  MAPE 1.33%  |  DA 0.1600
+[Random Walk] SAMP.N0000            RMSE 1.1517  |  MAE 0.7817  |  MAPE 1.31%  |  DA 0.1392
+[Random Walk] NTB.N0000             RMSE 1.7560  |  MAE 1.1483  |  MAPE 1.33%  |  DA 0.2240
+[Random Walk] HHL.N0000             RMSE 0.2192  |  MAE 0.1479  |  MAPE 1.04%  |  DA 0.1968
+[Random Walk] DIST.N0000            RMSE 0.4141  |  MAE 0.2803  |  MAPE 1.24%  |  DA 0.2400
+[Random Walk] HAYL.N0000            RMSE 1.5994  |  MAE 1.0813  |  MAPE 1.26%  |  DA 0.1600
+
+Results saved to /home/shaveen/MOMFA-LSTM/src/baselines/../../results/baselines/random_walk.json

@@ -1,0 +1,1248 @@
+================================================================================
+A MULTI-OBJECTIVE MODIFIED FIREFLY ALGORITHM FOR JOINT FEATURE SELECTION AND
+HYPERPARAMETER OPTIMIZATION OF LSTM NETWORKS:
+AN APPLICATION TO THE COLOMBO STOCK EXCHANGE
+================================================================================
+
+Author:     H.V.A.S. Udayanga (Index No. AS2022359)
+            Department of Computer Science, University of Sri Jayewardenepura
+            as2022359@sci.sjp.ac.lk
+Supervisor: Prof. T.G.I. Fernando
+            Department of Computer Science, University of Sri Jayewardenepura
+            tgi@sjp.ac.lk
+
+Source: Research Proposal (AS2022359) + Proposal Presentation (2026).
+This file is a plain-text reference for implementing the MOMFA-LSTM framework.
+Formulas are written in plain ASCII/code-like notation.
+
+HOW THIS FILE IS ORGANISED
+  Sections 0-8   = the approved research proposal (source of truth for WHAT
+                   the research is). Do not change the method described here
+                   without the author's approval.
+  Sections 9-12  = IMPLEMENTATION ADDENDUM written after the proposal. It
+                   fills gaps the proposal leaves open (data split, decoding,
+                   compute budget, results logging, figures, sanity checks)
+                   and sets working rules for AI coding assistants.
+                   Items marked [OPEN] must be confirmed by the author /
+                   supervisor before the related code is finalised.
+                   Items marked [DEFAULT] are the chosen default unless the
+                   author says otherwise.
+
+--------------------------------------------------------------------------------
+0. IMPLEMENTATION QUICK-REFERENCE (summary of the spec below)
+--------------------------------------------------------------------------------
+- Language / libs: Python 3, PyTorch (LSTM), pandas-ta (indicators),
+  NumPy, pandas, SciPy (Wilcoxon). Data: tvDatafeed (TradingView, CSE).
+- Data: daily OHLCV, 5 years, 10 liquid CSE tickers (e.g. JKH, COMB, DIAL,
+  HNB, LOLC, SAMP ...). One separate model / optimization run PER TICKER.
+- Target: next-day closing price LEVEL.
+- Preprocessing: forward-fill missing values; Min-Max scaling to [0,1] fit on
+  the TRAINING window only at every walk-forward fold (no leakage). Close
+  (target) scaled with the same Min-Max parameters as the inputs.
+- Validation: walk-forward, expanding training window, fixed-length
+  evaluation window; metrics averaged across all windows.
+- Feature pool: 25 technical indicators (Table II below).
+- Solution vector (31 dims): x = [b1..b25 (binary mask), h1..h6 (LSTM config)]
+    h1 num_layers     1 .. 3            (integer)
+    h2 units/layer    16 .. 256         (integer)
+    h3 learning rate  0.0001 .. 0.01
+    h4 dropout        0.1 .. 0.5
+    h5 lookback       5 .. 60 days      (integer)
+    h6 optimizer      {Adam, RMSprop, SGD} (continuous value -> equal-width
+                       thresholds -> one of 3 choices)
+  Mask must have at least 1 feature selected (min 1, max 25).
+- Objectives (both minimized):
+    f1 = RMSE of next-day close prediction (validation, walk-forward)
+    f2 = complexity = (#selected features) * (#trainable LSTM parameters)
+    [DECIDED 2026-06-16] implemented as #trainable LSTM parameters only
+    (docs/DECISIONS.md D-001: the parameter count already grows with the
+    number of features, so multiplying again double-counts it)
+- Algorithm: MOMFA
+    N = 20 fireflies, T = 30 iterations
+    beta0 (max attractiveness), gamma (light absorption) -- standard FA params
+    Levy flight random step, lambda (stability index) = 1.5
+    alpha_t = alpha0 * delta^t, alpha0 = 0.5, delta = 0.97
+    Sigmoid transfer on dims 1..25; clip dims 26..31 to ranges
+    Guide = random member of non-dominated (Pareto) archive
+    Output = final Pareto archive
+- LSTM training protocol (same for ALL methods): max 50 epochs, batch 32,
+  early stopping patience 10 (on validation RMSE), loss = MSE.
+- Baselines (7): Vanilla LSTM, Grid-search LSTM, PSO-LSTM, GA-LSTM,
+  GWO-LSTM, WOA-LSTM (all HPO-only, fixed features), Random-walk persistence.
+  [DECIDED 2026-06-16] plus an 8th: Sequential FA-LSTM (feature selection
+  first, then HPO) to test joint vs. sequential (docs/DECISIONS.md D-004).
+- Metrics: RMSE, MAE, MAPE, Directional Accuracy, Hypervolume (MOMFA only;
+  reference point = worst observed RMSE and worst observed complexity across
+  all runs).
+- Statistics: 30 independent runs (different seeds) per method; report
+  mean +/- std; Wilcoxon signed-rank test on RMSE, p < 0.05.
+- Also planned: ablation study (e.g. standard FA vs. modified components).
+
+--------------------------------------------------------------------------------
+ABSTRACT
+--------------------------------------------------------------------------------
+Stock price forecasting in frontier markets presents unique challenges that
+standard deep learning approaches struggle to address. The Colombo Stock
+Exchange, as a small and highly volatile emerging market, is particularly
+sensitive to these limitations, yet remains one of the least studied markets
+in the financial forecasting literature. Long Short-Term Memory networks have
+shown strong capability for financial time series prediction, but their
+performance is highly dependent on two interdependent decisions: which
+technical indicators to include as input features and how to configure the
+network architecture. Current research treats these as separate problems,
+optimizing one while keeping the other fixed. This separation is
+fundamentally flawed because the optimal network configuration changes
+depending on which features are selected and vice versa. Solving them
+independently therefore guarantees a suboptimal result.
+
+This study proposes a Multi-Objective Modified Firefly Algorithm that treats
+feature selection and hyperparameter tuning as a single unified optimization
+problem. Each candidate solution simultaneously encodes a subset of technical
+indicators and a complete LSTM configuration, allowing the algorithm to
+discover combinations that neither approach could find alone. Rather than
+optimizing for accuracy alone, the framework produces a Pareto-optimal set of
+solutions that represent trade-offs between forecast accuracy and model
+complexity, giving practitioners a meaningful choice of deployment
+configurations.
+
+The framework is evaluated on daily closing price data from the Colombo Stock
+Exchange using walk-forward validation and benchmarked against standard
+single-objective metaheuristic-optimized LSTM baselines. To the best of the
+authors' knowledge, this is the first study to apply a multi-objective
+metaheuristic to the joint feature selection and hyperparameter optimization
+problem for stock price forecasting on the Colombo Stock Exchange.
+
+Index Terms: Firefly Algorithm, Multi-Objective Optimization, LSTM, Feature
+Selection, Hyperparameter Tuning, Stock Price Forecasting, Colombo Stock
+Exchange
+
+Abbreviations:
+  LSTM   Long Short-Term Memory
+  ARIMA  Auto-regressive Integrated Moving Average
+  FA     Firefly Algorithm
+  MOMFA  Multi-Objective Modified Firefly Algorithm
+  CSE    Colombo Stock Exchange
+  RMSE   Root Mean Square Error
+  MAPE   Mean Absolute Percentage Error
+  MAE    Mean Absolute Error
+  HPO    Hyperparameter Optimization
+  PSO    Particle Swarm Optimization
+  GWO    Grey Wolf Optimizer
+  GA     Genetic Algorithm
+  WOA    Whale Optimization Algorithm
+
+--------------------------------------------------------------------------------
+1. INTRODUCTION & BACKGROUND
+--------------------------------------------------------------------------------
+Predicting stock prices accurately is one of the most challenging tasks in
+financial research. Investors, fund managers, and financial institutions rely
+on predictive models to make better decisions about buying and selling
+stocks. However, most of the research in this area has focused on large,
+well-established markets such as the New York Stock Exchange and major
+European stock exchanges. These markets have large amounts of historical
+data, high trading volumes, and stable trading patterns. Frontier markets are
+very different. The Colombo Stock Exchange is Sri Lanka's main stock market
+and operates with much lower trading volumes, fewer actively traded
+companies, and greater sensitivity to local political and economic events
+[1]. These characteristics make the CSE more difficult to model and predict
+than developed markets. Despite this, the CSE has received very little
+attention in the financial deep learning literature, which means there is a
+significant gap in research for this market.
+
+Long Short-Term Memory networks have become one of the most widely used deep
+learning models for financial time series forecasting. Unlike older
+statistical methods such as ARIMA, LSTM networks can learn complex non-linear
+patterns in sequential data and can remember information from the distant
+past, which is important for stock price prediction [2]. However, the
+performance of an LSTM model depends heavily on two key decisions. The first
+is the selection of input features, which in financial forecasting are
+typically technical indicators calculated from historical price and volume
+data. The second is the configuration of the network itself, including the
+number of layers, the number of units per layer, the learning rate, the
+dropout rate, and the lookback window. If the wrong features are selected,
+the model cannot learn useful patterns even if the network is well
+configured. Similarly, a good set of features cannot produce accurate
+predictions if the network architecture is poorly tuned [3]. These two
+decisions are also connected to each other, because the best network
+configuration depends on which features are used, and the value of a
+particular feature depends on how the network is set up.
+
+Existing research addresses these two problems separately. One group of
+studies uses metaheuristic algorithms such as Particle Swarm Optimization and
+Grey Wolf Optimizer to find good hyperparameter settings for LSTM networks
+while keeping the input features fixed [4]. Another group of studies uses
+metaheuristic algorithms to select the best subset of features while using a
+fixed network architecture [5]. Neither approach considers that these two
+problems are connected and should be solved together. Solving them
+separately means that the solution found for one part may not be the best
+when combined with the solution found for the other part (Fig. 1).
+Additionally, almost all existing work optimizes only one objective, such as
+prediction error, without considering the trade-off between accuracy and
+model complexity. A model that uses too many features and too many parameters
+may perform well during training but fails to generalize to new data, which
+is a serious problem in volatile markets such as the CSE.
+
+Fig. 1 (description): Current sequential practice vs. proposed unified
+approach.
+  Current practice (separate) -- SUB-OPTIMAL:
+    Fixed Features     -> Tune Hyperparameters -> LSTM
+    Fixed Architecture -> Select Features      -> LSTM
+  Proposed approach (unified) -- MOMFA:
+    Features + Hyperparameters (one vector) -> MOMFA -> Pareto front
+
+Illustrative example (from presentation):
+  WHEN DONE SEPARATELY: Feature selection picks RSI + MACD assuming a 2-layer
+  network. Then HPO tunes the network for those features. But the truly best
+  depth may be 1 layer, which changes which features matter. The pair locks
+  in a weak combination.
+  WHAT JOINT OPTIMIZATION DOES: Both halves are searched together. The
+  algorithm can find that RSI + EMA with a 1-layer network and lookback 20 is
+  the genuinely best combination, an answer that neither separate pipeline
+  could reach.
+
+This study proposes a Multi-Objective Modified Firefly Algorithm that solves
+feature selection and hyperparameter tuning as one combined optimization
+problem applied to Colombo Stock Exchange data. In the proposed framework,
+each candidate solution encodes both a selection of technical indicators and
+a complete LSTM configuration at the same time. The algorithm optimizes two
+objectives simultaneously: forecast accuracy and model complexity. This
+produces a set of Pareto-optimal solutions that represent different
+trade-offs between accuracy and simplicity, giving users the ability to
+choose a model that fits their practical requirements. The Firefly Algorithm
+is selected as the base optimization method because of its strong
+performance in multi-modal search problems and its relevance to existing
+research.
+
+Why two objectives, not just RMSE? (presentation)
+  A model with RMSE 0.012 using 22 features and 3 layers will overfit on CSE
+  data. An RMSE 0.014 model using 8 features and 1 layer may work better in
+  practice. The Pareto front gives a deployment-aware choice.
+
+Why Firefly, not PSO or GWO? (presentation)
+  PSO and GWO chase one global best and can converge too early. The Firefly
+  Algorithm has no single leader. Its distance-based attraction lets the
+  swarm split into subgroups and keep the diversity needed for complex search
+  spaces.
+
+Why this makes sense (presentation)
+  Combining feature selection and network tuning is already used in modern
+  automated machine learning (AutoML), where it gives better results than
+  doing the steps one after another. No one has applied this idea to LSTM
+  stock forecasting yet. We take a tested concept and apply it to an open
+  problem.
+
+--------------------------------------------------------------------------------
+2. LITERATURE REVIEW
+--------------------------------------------------------------------------------
+
+2.A Deep Learning for Stock Price Forecasting
+----------------------------------------------
+Predicting stock prices is a sequential problem, meaning that the order of
+data points matters and past values influence future ones. Because of this,
+researchers have moved away from traditional statistical methods and toward
+deep learning architectures specifically designed to handle sequential data.
+
+Early work used standard Recurrent Neural Networks, which process data step
+by step and pass information from one time step to the next through a hidden
+state. However, standard RNNs suffer from the vanishing gradient problem,
+where information from distant time steps gradually disappears during
+training. This makes standard RNNs unreliable for financial data, where
+long-term patterns and trends are important.
+
+To solve this, the LSTM network was introduced. LSTMs use three gates
+(forget gate, input gate, output gate) which together control what
+information is kept, updated, or discarded at each time step. This gating
+mechanism allows LSTMs to retain useful information over much longer
+sequences without suffering from vanishing gradients. As a result, LSTMs
+became the dominant architecture for financial time series forecasting and
+have been successfully applied across many global markets [2].
+
+A closely related architecture is the Gated Recurrent Unit (GRU), which
+simplifies the LSTM into two gates. GRUs are computationally lighter and have
+shown comparable or sometimes better performance in certain settings.
+However, LSTMs remain the most widely used and well-studied architecture in
+the financial forecasting literature, making them the appropriate baseline
+for this study.
+
+Within the Sri Lankan context, the most directly relevant work is that of
+Samarawickrama and Fernando, who applied a recurrent neural network to
+predict daily stock prices of selected companies listed on the CSE [1]. This
+study demonstrated that recurrent architectures can capture non-linear
+patterns in Sri Lankan equity data and established the first deep learning
+baseline for the CSE, evaluating architectures including GRU and LSTM.
+However, their models relied on manual configuration and fixed input
+features. The present study builds directly on this foundation by introducing
+a multi-objective metaheuristic approach to jointly optimize both the input
+feature space and the LSTM network configuration.
+
+2.B Metaheuristic Optimization of Deep Learning Models
+-------------------------------------------------------
+LSTM performance depends heavily on configuration. Setting layers, units,
+learning rate, dropout and lookback manually through trial and error is
+inefficient and rarely produces the best results. Researchers increasingly
+use metaheuristic (nature-inspired) optimization algorithms to automatically
+explore large configuration spaces.
+
+- PSO: particles move through the search space sharing information about the
+  best positions found. Zeng et al. applied PSO to optimize LSTM
+  hyperparameters for stock index prediction; PSO-LSTM consistently
+  outperformed standalone ML models across multiple global indices [4].
+  Safari and Hosseini combined PSO with LSTM for stock market forecasting and
+  reported strong accuracy vs. standard baselines [6].
+- GWO: inspired by grey wolf hunting. Tang et al. developed an improved GWO
+  with attention-based LSTM for futures price forecasting, capturing both
+  short-term changes and long-term dependencies [7]. Zhu et al. paired an
+  improved GWO with multi-head attention LSTM and achieved significant error
+  reductions [8].
+- Others: Liu et al. used the Sparrow Search Algorithm for LSTM
+  hyperparameters in stock trend prediction [9]. Gulmez applied the Seahorse
+  Optimization Algorithm for tuning LSTM in stock forecasting [10].
+
+Consistent limitation: every one of these studies tunes LSTM hyperparameters
+while keeping the input feature set FIXED. None treat feature selection and
+hyperparameter optimization as a single connected problem.
+
+2.C Firefly Algorithm and Feature Selection in Finance
+-------------------------------------------------------
+The Firefly Algorithm was proposed by Yang in 2009 [11]. Each firefly is a
+candidate solution. A less bright firefly is attracted to and moves toward a
+brighter one; brightness corresponds to solution quality. Attractiveness
+decreases with distance, so fireflies are more strongly influenced by nearby
+good solutions. This distance-dependent attraction gives FA a natural ability
+to explore multiple regions simultaneously, making it well suited to
+problems with many local optima (common in financial optimization).
+
+Fister et al. [12] reviewed FA properties and variants, confirming strong
+performance in complex multi-modal landscapes and that its parameters can be
+tuned to balance exploration/exploitation. Joy et al. [13] showed that
+parameter tuning of FA via Monte Carlo sampling (standard MC, quasi-MC, Latin
+hypercube) significantly improves search performance.
+
+Within the University of Sri Jayewardenepura research group, Ariyaratne and
+Fernando developed a Modified Firefly Algorithm (MODFA) for solving systems
+of nonlinear equations [14]. Their modification changed the attractiveness
+and step-size components, giving faster and more reliable convergence. This
+is a strong local precedent; the present study adapts a similar modification
+strategy for the joint feature selection + HPO problem.
+
+Das et al. [5] conducted the most directly relevant study using FA for
+feature selection in stock market forecasting. They applied an evolutionary
+Firefly framework to reduce input features before an OSELM prediction model,
+and FA-based reduction outperformed GA-based and standalone approaches.
+However, feature selection was a standalone step, separate from model
+configuration; selected features were evaluated against a fixed, manually
+configured model rather than the best model for that feature subset. This
+directly motivates the joint approach.
+
+2.D Identified Research Gap
+----------------------------
+Gap 1 (G1): No existing work jointly optimizes feature selection and
+hyperparameter tuning for stock price forecasting. Zeng et al. [4], Tang et
+al. [7], Safari and Hosseini [6] optimize network configuration with fixed
+features. Das et al. [5] performs feature selection with fixed model
+configuration. No published work combines both into a single unified
+optimization process.
+
+Gap 2 (G2): Multi-objective formulations for this problem are rare and
+incomplete. Jyothi and Krishnamurthy [15] proposed a multi-objective
+framework for stock prediction; Oyewola et al. [16] developed a
+Pareto-optimized LSTM for smart urban financial forecasting. Neither used the
+Firefly Algorithm, and neither combined feature selection and HPO in a single
+multi-objective search. The combination (multi-objective + joint FS/HPO +
+Firefly) has not appeared in the literature.
+
+Gap 3 (G3): The CSE remains heavily under-studied. Samarawickrama and
+Fernando [1] remains the clearest deep learning baseline for CSE. No
+subsequent study has built on it with modern metaheuristic-optimized
+architectures.
+
+TABLE I - Summary of related work
+(FS = feature selection, HPO = hyperparameter optimization, MO = multi-objective)
+
+  Study                              Algo.    FS   HPO      MO   Market
+  ---------------------------------- -------- ---- -------- ---- -----------
+  Samarawickrama & Fernando (2017)   RNN      No   No       No   CSE
+  Das et al. (2019) [5]              FA       Yes  No       No   NSE India
+  Liu et al. (2022) [9]              SSA      No   Yes      No   China
+  Jyothi & Krishnamurthy (2022) [15] MO       No   Partial  Yes  India
+  Zeng et al. (2025) [4]             PSO      No   Yes      No   Global
+  Tang et al. (2025) [7]             IGWO     No   Yes      No   Futures
+  Gulmez (2025) [10]                 SHO      No   Yes      No   Euronext
+  Zhu et al. (2025) [8]              IGWO     No   Yes      No   China
+  Safari & Hosseini (2026) [6]       PSO      No   Yes      No   Global
+  Oyewola et al. (2025) [16]         Pareto   No   Partial  Yes  Nigeria
+  THIS STUDY                         MOMFA    Yes  Yes      Yes  CSE
+
+--------------------------------------------------------------------------------
+3. METHODOLOGY
+--------------------------------------------------------------------------------
+
+3.A Overall Framework
+----------------------
+Fig. 2 workflow (MOMFA-LSTM):
+  Start
+   -> Initialize Firefly Population & Pareto Archive
+   -> LSTM Evaluation (Walk-Forward Validation)
+   -> Update Non-Dominated Pareto Archive (RMSE vs. Model Complexity)
+   -> Modified Firefly Movement (Levy Flight Step)
+   -> Max Iter?  No -> back to LSTM Evaluation
+                 Yes -> Output Pareto Front & Optimal Configurations
+
+Pipeline stages (presentation):
+  01 CSE Raw Data          - Daily OHLCV from tvDatafeed. 5 years, 10 liquid
+                             stocks.
+  02 Technical Indicators  - 25 indicators in 4 groups, computed with
+                             pandas-ta.
+  03 Solution Encoding     - Binary mask of 25 bits + LSTM config of 6
+                             values, in one vector.
+  04 Modified Firefly      - Levy flight, sigmoid transfer, adaptive alpha,
+     (ITERATIVE)             Pareto archive.
+  05 LSTM Train & Evaluate - Walk-forward validation. Compute RMSE and
+     (ITERATIVE)             complexity.
+  06 Pareto Front          - Non-dominated set of accuracy vs. complexity
+                             trade-offs.
+  07 Model Selection       - Pick the operating point on the Pareto front.
+  Stages 04 and 05 form the inner optimization loop. Each evaluation trains an
+  LSTM under the candidate's features and hyperparameters, and the population
+  evolves toward the Pareto front.
+
+Four main stages:
+  1) Data preparation: collect daily CSE prices for selected liquid tickers;
+     compute a fixed set of technical indicators = full candidate feature
+     pool.
+  2) Solution encoding: each firefly = one vector with (a) binary feature
+     mask and (b) real-valued LSTM configuration.
+  3) Optimization: each iteration, every firefly is decoded into an LSTM,
+     trained on historical data, evaluated on validation. Two fitness values:
+     RMSE and complexity (#selected features x #trainable parameters).
+     Fireflies move toward attractive, better-performing fireflies.
+  4) Evaluation/output: non-dominated solutions form the Pareto front; the
+     best solution for a given deployment context is chosen from it.
+
+Feature selection and hyperparameter tuning are NEVER treated as separate
+decisions; both are optimized simultaneously in the same loop.
+
+3.B Data Collection and Preprocessing
+--------------------------------------
+1) Data source and ticker selection
+   - Daily historical OHLCV (open, high, low, close, volume) from the CSE via
+     TradingView using the tvDatafeed Python library (free).
+   - Only the most liquid, actively traded CSE stocks: fewer missing values
+     and more reliable price patterns.
+   - Tickers include John Keells Holdings (JKH), Commercial Bank of Ceylon
+     (COMB), Dialog Axiata (DIAL), Hatton National Bank (HNB), LOLC Holdings,
+     Sampath Bank, among others: 10 stocks across different sectors.
+   - A separate LSTM model is trained for each ticker independently
+     (per-ticker modeling), so feature/hyperparameter configurations are
+     optimized for each stock's characteristics.
+
+2) Time period
+   - Five years of data, capturing growth, decline, and high-volatility
+     regimes (Sri Lanka had significant economic/political volatility in
+     this period).
+
+3) Preprocessing
+   - Target variable: next-day closing price level.
+   - Missing values (holidays, trading suspensions): forward fill.
+   - Min-Max normalization to [0, 1] (indicators have very different scales,
+     e.g. price in thousands vs. RSI 0-100).
+   - Closing price (target) normalized with the same Min-Max parameters as
+     the input features.
+   - Normalization fit ONLY on training data at each validation step; those
+     parameters are then applied to validation and test sets separately. No
+     future information leaks into training.
+
+4) Walk-forward validation
+   - Random cross-validation is NOT used (causes leakage).
+   - Expanding training windows: train on an initial period, evaluate on the
+     next fixed-length window; expand the training window to include the
+     evaluated period; retrain; evaluate the next window; repeat to end of
+     dataset.
+   - Final metrics are averaged across all evaluation windows.
+
+3.C Feature Space
+------------------
+25 technical indicators computed from OHLCV with pandas-ta, grouped into 4
+categories. They form the candidate feature pool; the binary mask decides
+which subset is passed to the LSTM (1 = included, 0 = excluded).
+
+TABLE II - 25 technical indicators
+(C = close, H = high, L = low, V = volume, n = period, EMA = exp. moving avg)
+
+Group 1: Momentum (7)
+  1  Relative Strength Index   RSI      RSI = 100 - 100/(1+RS),
+                                        RS = AvgGain/AvgLoss over n periods
+  2  MACD Line                 MACD     MACD = EMA12(C) - EMA26(C)
+  3  MACD Signal Line          MACD-S   Signal = EMA9(MACD)
+  4  Stochastic %K             STCK     %K = (C - L14)/(H14 - L14) * 100
+  5  Stochastic %D             STCD     %D = SMA3(%K)
+  6  Rate of Change            ROC      ROC = (C_t - C_{t-n})/C_{t-n} * 100
+  7  Williams %R               WR       %R = (H14 - C)/(H14 - L14) * -100
+
+Group 2: Trend (7)
+  8  Exponential MA (9)        EMA9     EMA_t = C_t*k + EMA_{t-1}*(1-k),
+                                        k = 2/(n+1)
+  9  Exponential MA (21)       EMA21    same as EMA9 with n = 21
+  10 Exponential MA (50)       EMA50    same as EMA9 with n = 50
+  11 Simple MA (20)            SMA20    SMA = (1/n) * sum_{i=0}^{n-1} C_{t-i}
+  12 Average Directional Index ADX      trend strength from +DI and -DI over
+                                        14 periods
+  13 Commodity Channel Index   CCI      CCI = (TP - SMA(TP)) / (0.015 * MD),
+                                        TP = (H+L+C)/3, MD = mean deviation
+  14 Parabolic SAR             PSAR     SAR_{t+1} = SAR_t + AF*(EP - SAR_t)
+
+Group 3: Volatility (5)
+  15 Bollinger Band Upper      BB-U     BBU = SMA20(C) + 2*sigma20
+  16 Bollinger Band Lower      BB-L     BBL = SMA20(C) - 2*sigma20
+  17 Bollinger Band Width      BB-W     BBW = (BBU - BBL) / SMA20(C)
+  18 Average True Range        ATR      ATR = (1/n) * sum TR_t,
+                                        TR = max(H-L, |H-C_{t-1}|, |L-C_{t-1}|)
+  19 Standard Deviation        STDDEV   sigma = sqrt((1/n) * sum (C_i - Cbar)^2)
+
+Group 4: Volume (6)
+  20 On Balance Volume         OBV      OBV_t = OBV_{t-1} +/- V by price
+                                        direction
+  21 Money Flow Index          MFI      MFI = 100 - 100/(1+MFR) over 14 periods
+  22 Volume Weighted Avg Price VWAP     VWAP = sum(TP*V)/sum(V), TP = (H+L+C)/3
+  23 Volume Simple Moving Avg  VSMA     VSMA = (1/n) * sum_{i=0}^{n-1} V_{t-i},
+                                        n = 20
+  24 Volume Rate of Change     VROC     VROC = (V_t - V_{t-n})/V_{t-n} * 100
+  25 Chaikin Money Flow        CMF      CMF = sum(MFV_i)/sum(V_i),
+                                        MFV = ((C-L) - (H-C))/(H-L) * V
+
+Indicators were chosen for their widespread use in the literature and for
+capturing complementary aspects of price behavior (momentum, trend,
+volatility, volume).
+
+3.D Solution Encoding
+----------------------
+Each firefly = one combination of selected indicators + one LSTM
+configuration, encoded as a single vector with two parts.
+
+Part 1: Binary Feature Mask
+  Binary string of length 25; position i corresponds to indicator i in
+  Table II (1-indexed). 1 = included, 0 = excluded.
+  Example: positions 1, 3, 7 = 1 and all others 0 -> only RSI, MACD Signal
+  Line, and Williams %R are used. Any combination from 1 to 25 indicators is
+  allowed.
+
+Part 2: Real-Valued Hyperparameter Vector (6 values)
+
+TABLE III - LSTM hyperparameter search space
+  Hyperparameter     Description                          Search range
+  -----------------  -----------------------------------  -------------------
+  Number of layers   Depth of the LSTM network            1 to 3
+  Units per layer    LSTM units in each layer             16 to 256
+  Learning rate      Step size during gradient descent    0.0001 to 0.01
+  Dropout rate       Fraction of units dropped in train   0.1 to 0.5
+  Lookback window    Past time steps used as input        5 to 60 (days)
+  Optimizer          Training algorithm selection         {Adam, RMSprop, SGD}
+
+Combined solution vector (Eq. 1):
+  x = [ b1, b2, ..., b25,  h1, h2, h3, h4, h5, h6 ]
+        \____________/    \____________________/
+      Binary Feature Mask   LSTM Hyperparameters
+  where b_i in {0,1} for i = 1..25 (indicator i selected or not) and h_j for
+  j = 1..6 are the six hyperparameters in Table III.
+  Total dimensionality = 31.
+
+Example firefly (presentation):
+  1 0 1 1 0 0 1 0 1 0 1 0 0 1 0 1 0 0 1 1 0 1 0 1 0 | 2 128 3e-3 0.30 30 Adam
+  (mask of 25 bits | layers=2, units=128, lr=0.003, dropout=0.30,
+   lookback=30, optimizer=Adam)
+
+Decoding: extract selected features using the mask; build and train an LSTM
+with the hyperparameters in Part 2; train on CSE data and evaluate to produce
+the two fitness values (forecast error, model complexity). These determine
+attractiveness between fireflies.
+
+3.E Multi-Objective Modified Firefly Algorithm (MOMFA)
+-------------------------------------------------------
+Based on Yang's FA [11], modified in two ways:
+  (1) Gaussian random walk replaced by a Levy flight step;
+  (2) sigmoid transfer function for the binary feature mask.
+Also extended to optimize two objectives simultaneously (multi-objective).
+
+1) Two optimization objectives
+   f1: Forecast error = RMSE (minimize). Lower RMSE = predictions closer to
+       actual prices. RMSE of the next-day close prediction on the validation
+       fold.
+   f2: Model complexity = (#selected features) x (#trainable LSTM parameters)
+       (minimize). A simple proxy for cost and overfitting risk.
+       [DECIDED 2026-06-16] implemented as #trainable LSTM parameters only,
+       see docs/DECISIONS.md D-001.
+   These objectives conflict: more features/parameters may lower RMSE but
+   raise complexity. The algorithm returns a set of trade-off solutions
+   (Pareto front) rather than a single answer.
+
+2) Standard Firefly update rule (Eq. 2)
+   x_i^{t+1} = x_i^t + beta0 * exp(-gamma * r_ij^2) * (x_j^t - x_i^t)
+               + alpha * eps^t
+   where:
+     x_i^t  = current position of firefly i at iteration t
+     x_j^t  = position of the brighter firefly j
+     beta0  = maximum attractiveness at zero distance
+     gamma  = light absorption coefficient (how fast attractiveness decays
+              with distance)
+     r_ij   = Euclidean distance between fireflies i and j
+     alpha  = randomization parameter
+     eps^t  = random vector drawn from a Gaussian distribution
+   Fister et al. [12] confirm that alpha and the choice of random walk
+   strongly affect the ability to explore without getting stuck in local
+   optima.
+
+3) Modification 1: Levy flight step
+   The Gaussian term alpha * eps^t is replaced by a Levy flight step, which
+   produces occasional large jumps in addition to small local moves, helping
+   escape local optima in the high-dimensional, multi-modal joint search
+   space.
+     (Eq. 3)  alpha * eps^t  ->  alpha * L(lambda)
+   where L(lambda) is a Levy distribution with stability index lambda,
+   typically lambda = 1.5 (following Ariyaratne and Fernando [14]).
+
+   Adaptive alpha decay (Eq. 4):
+     alpha_t = alpha0 * delta^t
+     alpha0 = 0.5 (initial randomization), delta = 0.97 (decay constant),
+     t = current iteration.
+   Explores broadly early, refines later.
+
+   Why a heavy tail (presentation): Gaussian steps have thin tails. On a
+   31-D space with 25 binary dimensions, thin-tailed search converges too
+   early. The Levy tail gives a real chance of long jumps that restart the
+   search elsewhere.
+
+4) Modification 2: Sigmoid transfer function for binary features
+   The update rule produces real values, but dims 1..25 must be 0/1. After
+   each position update, for binary dimensions only:
+     (Eq. 5)  S(x_i^d) = 1 / (1 + exp(-x_i^d))
+     (Eq. 6)  b_i^d = 1 if r < S(x_i^d), else 0
+   where x_i^d is the real-valued position of firefly i in binary dimension d,
+   r ~ Uniform[0,1], and b_i^d is the resulting bit. Standard approach for
+   binarizing continuous metaheuristics; guarantees a valid mask after each
+   update.
+   Why stochastic (presentation): the sigmoid turns each number into a
+   probability, and a random draw picks 1 or 0, bridging continuous math
+   with discrete choices.
+
+   Real-valued hyperparameter dims (26..31) use the standard update rule
+   without a transfer function and are clipped to the ranges in Table III.
+
+5) Pareto dominance and the Pareto front
+   Solution x_a dominates x_b iff:
+     - x_a is at least as good as x_b on every objective, AND
+     - x_a is strictly better than x_b on at least one objective.
+   A solution not dominated by any other is non-dominated.
+   At each iteration the algorithm maintains an archive of all non-dominated
+   solutions found so far (updated at every step). When a firefly moves, it
+   moves toward a RANDOMLY SELECTED solution from this archive rather than a
+   single global best. At the end, the archive is the final Pareto front;
+   each point is a valid accuracy/complexity trade-off.
+
+6) Algorithm summary
+   1) Initialize a population of N = 20 fireflies with random positions in
+      the joint solution space.
+   2) Evaluate each firefly: decode its vector, train the corresponding LSTM,
+      compute RMSE and complexity.
+   3) Update the non-dominated archive with any non-dominated solutions from
+      the current population.
+   4) For each firefly i:
+        a) Select a guide solution j randomly from the archive.
+        b) Update position using the modified update rule with Levy flight.
+        c) Apply sigmoid transfer function to binary dimensions.
+        d) Clip real-valued dimensions to their search ranges.
+   5) Update alpha using the adaptive decay rule.
+   6) Repeat steps 2-5 for T = 30 iterations.
+   7) Return the final Pareto front from the archive.
+
+   Key parameters: N = 20 (population), T = 30 (iterations), selection rule
+   = Pareto dominance, archive = non-dominated set.
+
+3.F LSTM Configuration Search Space
+------------------------------------
+Six hyperparameters (Table III). Searching them simultaneously with the
+feature mask gives a much larger and more meaningful search space than any
+existing single-objective approach.
+
+1) Network architecture parameters
+   - Number of layers (1-3): network depth; balances pattern complexity
+     against overfitting risk on the relatively small CSE dataset.
+   - Units per layer (16-256): memory capacity at each time step.
+   - Learning rate (0.0001-0.01): weight update magnitude; bounded to ensure
+     stable convergence across all three optimizers.
+   - Dropout rate (0.1-0.5): regularization by randomly deactivating units.
+   - Lookback window (5-60 days): historical context per prediction step,
+     short- to medium-term horizons.
+
+2) Optimizer
+   Included as a searchable hyperparameter because the best learning
+   algorithm varies with selected features and network configuration.
+   - RMSprop: originally proposed for RNNs; per-parameter adaptive learning
+     rate; stabilizes training on non-stationary LSTM gradients.
+   - Adam: RMSprop + momentum estimation; widely used.
+   - SGD with momentum: well-established, computationally efficient baseline.
+   Decoding: the continuous position value for this dimension is mapped to
+   one of the three discrete choices using equal-width thresholds.
+
+3) Training protocol (fixed, identical for ALL methods incl. baselines)
+   - Max 50 epochs
+   - Batch size 32
+   - Early stopping, patience 10 epochs (stop if validation RMSE does not
+     improve for 10 consecutive epochs)
+   - Loss function: Mean Squared Error (MSE)
+   Held constant to isolate the effect of feature selection and HPO.
+
+All six hyperparameters are optimized simultaneously with the feature mask.
+The algorithm searches all 31 dimensions at the same time (not features
+first then model, or model first then features).
+
+--------------------------------------------------------------------------------
+4. BASELINES AND EVALUATION
+--------------------------------------------------------------------------------
+
+4.A Baseline Methods (7)
+-------------------------
+  1) Vanilla LSTM - no optimization; hyperparameters and input features set
+     manually from common literature defaults. Lower bound.
+  2) Grid Search LSTM - fixed set of hyperparameter combinations tested
+     exhaustively; lowest validation RMSE selected. No feature selection;
+     slow as dimensionality grows.
+  3) PSO-LSTM - Particle Swarm Optimization tunes LSTM hyperparameters
+     (Kennedy & Eberhart) [17].
+  4) GA-LSTM - Genetic Algorithm tunes LSTM hyperparameters (Holland) [18].
+  5) GWO-LSTM - Grey Wolf Optimizer tunes LSTM hyperparameters (Mirjalili)
+     [19].
+  6) WOA-LSTM - Whale Optimization Algorithm tunes LSTM hyperparameters
+     (Mirjalili & Lewis) [20].
+  7) Random Walk Persistence - predicts tomorrow's close = today's close.
+     Non-learning sanity floor; if learned models cannot beat it, the task is
+     not meaningful.
+
+[DECIDED 2026-06-16] An 8th baseline, Sequential FA-LSTM (FA feature
+selection with fixed hyperparameters, then FA HPO on the selected features),
+is added to test joint vs. sequential optimisation directly
+(docs/DECISIONS.md D-004).
+
+Baselines 1-6 tune LSTM hyperparameters ONLY (features fixed), intentionally.
+They isolate one variable: joint vs. separate optimization. If MOMFA beats
+them all, the joint search itself is the reason, not the choice of
+optimizer.
+
+4.B Performance Metrics (5)
+----------------------------
+  RMSE (Eq. 7):  RMSE = sqrt( (1/n) * sum_{t=1}^{n} (yhat_t - y_t)^2 )
+                 Penalizes larger errors more heavily. Lower is better.
+
+  MAE (Eq. 8):   MAE = (1/n) * sum_{t=1}^{n} |yhat_t - y_t|
+                 Average absolute error; easy to interpret.
+
+  MAPE (Eq. 9):  MAPE = (1/n) * sum_{t=1}^{n} |(yhat_t - y_t)/y_t| * 100
+                 Percentage error; comparable across stocks at different
+                 price levels.
+
+  Directional Accuracy (Eq. 10):
+                 DA = (1/n) * sum_{t=1}^{n}
+                      1[ (yhat_t - y_{t-1}) * (y_t - y_{t-1}) > 0 ] * 100
+                 How often the predicted up/down direction is correct.
+
+  Hypervolume:   Volume of objective space dominated by the Pareto front
+                 relative to a reference point. Higher = better front (wider,
+                 more optimal trade-offs). Computed for MOMFA only.
+                 Reference point = (worst observed RMSE across all runs,
+                 worst observed complexity across all runs).
+
+4.C Statistical Testing
+------------------------
+- Metaheuristics are stochastic: every experiment is repeated 30 times with
+  different random seeds for each method.
+- Report mean and standard deviation across the 30 runs.
+- Wilcoxon signed-rank test (non-parametric; no normality assumption) on the
+  RMSE values from the 30 runs for each pair (MOMFA vs. each baseline).
+- Significance threshold: p < 0.05.
+- An ablation study is also planned in the experiment phase (Month 10).
+
+--------------------------------------------------------------------------------
+5. DELIVERABLES
+--------------------------------------------------------------------------------
+  1) Cleaned, labeled dataset of daily historical prices for selected CSE
+     tickers including all 25 computed technical indicators, in a structured
+     format for reproducibility.
+  2) Fully implemented MOMFA (Levy flight, sigmoid transfer for binary
+     dimensions, Pareto archive management) in Python, released open-source
+     on GitHub with documentation and usage instructions.
+  3) Complete LSTM forecasting pipeline integrated with the optimizer:
+     preprocessing, walk-forward validation, training, evaluation scripts;
+     full experiment reproducible from raw data to final results.
+  4) Benchmark comparison report: MOMFA vs. all 7 baselines across all 5
+     metrics, with Wilcoxon signed-rank results over 30 independent runs.
+  5) Final thesis document (University of Sri Jayewardenepura FYP format).
+  6) Literature review paper on metaheuristic optimization of deep learning
+     models for financial forecasting (prepared before experiments).
+  7) Conference paper draft targeting IEEE ICIIS (International Conference
+     on Industrial and Information Systems) or comparable indexed venue.
+
+--------------------------------------------------------------------------------
+6. RESOURCES REQUIRED
+--------------------------------------------------------------------------------
+Software: Python 3; PyTorch (LSTM); pandas-ta (technical indicators); NumPy
+  and pandas (data processing); SciPy (statistical testing). All free/open
+  source.
+Data: CSE historical daily data from TradingView via tvDatafeed. No paid
+  subscription.
+Compute: Workstation PC in the Embedded Lab, Department of Computer Science,
+  University of Sri Jayewardenepura (high-performance GPU, sufficient RAM).
+  Backup: Google Colab and Kaggle Kernels (free GPU). No external funding.
+Other: No licensed software, no purchased datasets, no specialized hardware.
+
+--------------------------------------------------------------------------------
+7. SCHEDULE (12 months)
+--------------------------------------------------------------------------------
+Accounts for semester 1 modules/exams in month 4 and internship from month 5.
+
+Milestones:
+  Month 3:  Dataset and preprocessing pipeline complete. Proposal submitted.
+  Month 4:  Exam period. Light reading only, no active development.
+  Month 7:  All seven baseline models implemented; benchmark results recorded.
+  Month 9:  Full MOMFA implementation complete incl. multi-objective
+            extension and Pareto front output.
+  Month 10: All experiments complete. Statistical results validated.
+  Month 11: Thesis draft complete. Literature review paper drafted and
+            submitted for supervisor review.
+  Month 12: Final thesis submitted. Conference paper drafted. Defense
+            completed.
+
+Phase view (presentation):
+  M1       Foundation   - Lit. review, data pipeline, proposal, presentation
+  M2-M3    Early build  - Preprocessing, vanilla LSTM, grid search
+  M4       Exams        - Exams only, light reading
+  M5-M6    Baselines    - PSO, GA, GWO, WOA tuned LSTMs
+  M7-M9    MOMFA build  - Levy, sigmoid, Pareto archive, multi-objective
+  M10      Experiments  - Full benchmark, Wilcoxon, ablation
+  M11-M12  Thesis & defense - Thesis, papers, defense
+
+TABLE IV - task list:
+  Literature review and gap analysis
+  Data collection and preprocessing
+  Technical indicator calculation
+  Vanilla LSTM and grid search baseline
+  Exam period (no active development)                  [M4]
+  PSO-LSTM and GA-LSTM baselines
+  GWO-LSTM and WOA-LSTM baselines
+  MOMFA implementation (standard FA + modifications)
+  Multi-objective extension & Pareto archive
+  Full benchmark and ablation study
+  Statistical testing (Wilcoxon, 30 seeds)
+  Thesis writing
+  Literature review paper
+  Conference paper draft
+  Final defense prep and submission
+
+--------------------------------------------------------------------------------
+8. SUMMARY / CONTRIBUTIONS
+--------------------------------------------------------------------------------
+This study is the first to apply a multi-objective metaheuristic to the joint
+feature selection and hyperparameter optimization problem for LSTM-based
+stock price forecasting on the Colombo Stock Exchange.
+  01 Joint optimization instead of separate steps.
+  02 Multi-objective Pareto approach.
+  03 First application on CSE data.
+
+################################################################################
+################################################################################
+##                                                                            ##
+##   IMPLEMENTATION ADDENDUM (Sections 9-12)                                  ##
+##   Not part of the submitted proposal. Written to make implementation       ##
+##   unambiguous, verifiable, and aligned with the research goals.            ##
+##                                                                            ##
+################################################################################
+################################################################################
+
+--------------------------------------------------------------------------------
+9. IMPLEMENTATION DECISIONS (gaps the proposal leaves open)
+--------------------------------------------------------------------------------
+
+9.1 Data split: optimization data vs. final test data   [DEFAULT]
+  - The proposal mentions "validation and test sets separately" but does not
+    define them. Rule: split each ticker's series CHRONOLOGICALLY into
+      (a) Development period  = first ~80%  -> used for walk-forward folds.
+          ALL optimization (MOMFA and every baseline) sees only this part.
+      (b) Final test period   = last ~20%   -> never seen by any optimizer.
+          Used ONCE at the end to report RMSE/MAE/MAPE/DA for the thesis.
+  - Inside the development period: walk-forward, expanding window, K folds
+    (fold count is part of the compute budget, see 9.8).
+  - Fitness (f1 RMSE) = mean RMSE across the K walk-forward folds.
+  - Final reported metrics = model retrained on the whole development period
+    with the chosen configuration, then evaluated on the final test period.
+  - The SAME split dates and SAME fold boundaries are used for every method
+    and every run. Store them in a config file, not hard-coded.
+
+9.1.1 Early stopping for the FINAL retrained model   [DECIDED 2026-09-28]
+  - Context: after a configuration is chosen (from walk-forward folds or from
+    the Pareto/baseline search), it is RETRAINED on the whole development
+    period before being evaluated once on the final test period (9.1). Early
+    stopping (patience 10, see 3.F.3 / Section 0) needs its own validation
+    slice during this retrain, and the final test period must never be used
+    for that (would be leakage).
+  - Rule: reserve the LAST 126 trading days (~6 months) of the development
+    period as an early-stopping validation slice. The final model is trained
+    on development-period rows BEFORE this slice and early-stopped on it.
+    Once the stopping epoch is found, this rule does not require retraining
+    again on the full development period — training on
+    (development minus last 126 days) with early stopping on that slice IS
+    the final training run.
+  - This same 126-day rule applies identically to MOMFA's selected model(s)
+    and to every baseline's final model, for fairness.
+  - If a ticker's development period is too short for this (roughly need at
+    least 3x126 rows for a sane train/stop split), scale the slice down
+    proportionally and note it per ticker in config.json (Section 10).
+
+9.2 Leakage rules (must be enforced by code AND by unit tests)
+  - Min-Max scalers are fit on the training part of each fold only, then
+    applied to that fold's validation part. Refit per fold.
+  - Target y_t = Close_{t+1}. Features for predicting y_t use rows <= t only.
+  - Technical indicators must be backward-looking only (no centered windows).
+  - Forward-fill is for gaps in raw OHLCV only. Indicator warm-up NaNs (e.g.
+    the first 49 rows of EMA50) are DROPPED, not filled. Drop the same rows
+    for every candidate so all methods use identical dates.
+  - Target scaling: "same Min-Max parameters as input features" is read as:
+    the Close column's scaler (fit on the training fold) is used to scale and
+    inverse-scale the target.
+
+9.2.1 Target transformation   [DECIDED 2026-09-28]
+  - Problem found: with the price LEVEL as the LSTM target and Min-Max scaling
+    fit on training rows, test-period prices far above the training range
+    (e.g. HNB 205 -> 424 LKR) could not be predicted (vanilla test RMSE 57.5
+    vs random walk 5.0). See docs/FINDINGS.md F-001, docs/DECISIONS.md D-009.
+  - Rule: the LSTM predicts the next-day return r_t = Close_{t+1}/Close_t - 1
+    (Min-Max scaled, scaler fit on training rows only). The forecast is
+    Close_t * (1 + r_hat). All metrics (RMSE, MAE, MAPE, DA) are still
+    computed on the next-day closing price in LKR, so the research target
+    (next-day close, 3.B.3) is unchanged.
+  - Applies identically to MOMFA and every learned baseline.
+
+9.3 Evaluation alignment when lookback differs
+  - Different fireflies use different lookback windows (5-60). A candidate
+    with lookback 60 would otherwise lose more samples than one with 5.
+  - Rule: every candidate is evaluated on EXACTLY the same target dates in
+    each validation fold. Sequences may reach back into the training period
+    for their input history (this is allowed; it is past data).
+
+9.4 Input feature set   [OPEN]
+  - The proposal defines inputs as the 25 indicators selected by the mask.
+    It does not say whether the raw Close price is always an input.
+  - [DEFAULT] Follow the proposal: inputs = selected indicators only.
+  - Consider as an ablation: "Close always included + masked indicators".
+  - For baselines "fixed features" = all 25 indicators   [DEFAULT].
+
+9.5 VWAP note   [OPEN]
+  - pandas-ta VWAP is anchored per day by default. On DAILY bars that makes
+    VWAP equal to the typical price (H+L+C)/3 each day, i.e. not useful.
+  - [DEFAULT] Use a rolling 20-day VWAP: sum(TP*V, 20) / sum(V, 20).
+    Document this in the thesis.
+
+9.6 Decoding the 31-dimensional vector
+  - Hyperparameter dimensions are stored internally in a NORMALISED space
+    [0, 1] and mapped to real ranges on decode. Reason: otherwise "units"
+    (16-256) dominates the Euclidean distance r_ij and the attractiveness
+    term.
+      layers    = round(1 + u*(3-1))                 -> {1,2,3}
+      units     = round(16 + u*(256-16))             -> 16..256
+      lr        = 10^( -4 + u*2 )  (log scale)       -> 1e-4..1e-2 [DEFAULT]
+      dropout   = 0.1 + u*0.4                        -> 0.1..0.5
+      lookback  = round(5 + u*55)                    -> 5..60
+      optimizer = Adam if u<1/3, RMSprop if u<2/3, else SGD (momentum 0.9)
+  - Binary dimensions keep a continuous position value x (unbounded or
+    clipped to e.g. [-6, 6]); the bit is re-sampled with the sigmoid rule
+    (Eq. 5-6) after every move. Distance r_ij uses the continuous positions.
+  - Empty mask repair: if all 25 bits are 0, set the bit with the highest
+    sigmoid probability to 1.
+    [DECIDED 2026-06-24] implemented as: set ONE bit chosen uniformly at
+    random (seeded) to 1, so the repair does not favour any feature
+    (docs/DECISIONS.md D-007).
+  - Dropout between LSTM layers only applies when layers > 1 (PyTorch
+    behaviour); also apply a dropout layer before the output layer so that a
+    1-layer model still uses the dropout value.
+  - Complexity f2 = (#selected features) * sum(p.numel() for trainable p).
+    [DECIDED 2026-06-16] implemented as sum(p.numel()) only (D-001).
+  - Levy step: Mantegna's algorithm with lambda = 1.5.
+
+9.7 Pareto archive   [OPEN]
+  - Archive size limit is not in the proposal. [DEFAULT] cap = 50; when full,
+    remove the most crowded member (NSGA-II crowding distance).
+  - Cache evaluations: identical decoded configurations are not retrained.
+
+9.8 Compute budget   [OPEN - MUST BE DECIDED BEFORE EXPERIMENTS]
+  - One MOMFA run = N + N*T = 20 + 20*30 = 620 candidate evaluations.
+  - Each evaluation = K walk-forward folds = K LSTM trainings.
+  - Full plan: 620 evals x K folds x 10 tickers x 30 runs x 5 metaheuristic
+    methods (MOMFA, PSO, GA, GWO, WOA). With K = 5 this is about
+    4.65 million LSTM trainings (plus ablation), which is NOT feasible on
+    one workstation.
+  - Options to discuss with the supervisor (pick and document):
+      a) Use K = 3 folds during optimization; full folds only for the final
+         model.
+      b) Run the 30-seed statistical study on a subset (e.g. 3-5 tickers);
+         run the other tickers with fewer seeds.
+      c) Reduce max epochs during search (e.g. 20) with early stopping;
+         keep 50 for final retraining.
+      d) Measure one evaluation's time first, then compute total hours.
+  - FAIRNESS RULE: every metaheuristic baseline (PSO, GA, GWO, WOA) gets the
+    SAME number of candidate evaluations as MOMFA (e.g. 620) and the same
+    folds, epochs and training protocol.
+  - [DECIDED 2026-09-28 by author] Run the FULL plan with no reduction:
+    K = 5 folds, 30 seeds, all 10 tickers, N = 20, T = 30, max 50 epochs,
+    for every method. Options a)-c) are NOT used. The experiment timeline is
+    extended instead (compute: author's laptop GPU + Modal cloud credit).
+    Option d) (measure first) is used only to plan the timeline.
+    See docs/DECISIONS.md D-010.
+
+9.9 Baseline specifics
+  - Vanilla LSTM [DECIDED 2026-09-28]: 1 layer, 64 units, lr 0.001,
+    dropout 0.2, lookback 20, Adam, all 25 features. Cite a source for these
+    defaults. (Confirmed after implementation used 2 layers by mistake;
+    corrected to match this spec — this baseline must stay the simplest,
+    "no tuning" reference point, not an already-improved architecture.)
+  - Grid search [DEFAULT]: layers {1,2}, units {32,64,128},
+    lr {1e-3, 1e-4}, dropout {0.2}, lookback {10,20,30}, optimizer {Adam}.
+    Report the grid size in the thesis.
+  - PSO/GA/GWO/WOA: tune the same 6 hyperparameters, same ranges, same
+    decoding, single objective (validation RMSE), features fixed = all 25.
+    Libraries allowed (e.g. mealpy) OR own implementation; record which.
+  - Random walk: y_hat_{t+1} = Close_t. No training.
+
+9.10 Choosing one MOMFA model to compare with single-objective baselines
+  - MOMFA returns a Pareto front; baselines return one model. For the RMSE
+    comparison and Wilcoxon test, take from each MOMFA run:
+      (a) MOMFA-minRMSE: the front member with the lowest validation RMSE
+      (b) MOMFA-knee:    the knee point (max distance to the line joining the
+          two extreme points of the normalised front)
+    Report both. Decide this rule BEFORE looking at test results.
+
+9.11 Statistics details
+  - Wilcoxon signed-rank needs PAIRED samples: pair run i of MOMFA with
+    run i of the baseline (same seed index, same ticker).
+  - Test per ticker, and also pooled across tickers.
+  - With 6+ comparisons, apply Holm-Bonferroni correction [DEFAULT] and
+    report both raw and corrected p-values. Report effect size too
+    (e.g. median difference, or rank-biserial correlation).
+  - Hypervolume: normalise both objectives to [0,1] using the global min/max
+    across all runs before computing HV (complexity is in the millions and
+    would otherwise dominate). Reference point = (1.1, 1.1) in normalised
+    space, i.e. slightly worse than the worst observed values.
+
+9.12 Ablation study (scheduled for Month 10; not defined in proposal)
+  - A1 Standard FA (Gaussian random walk, constant alpha) multi-objective
+  - A2 FA + Levy flight only
+  - A3 FA + adaptive alpha only
+  - A4 Full MOMFA
+  - A5 MOMFA single-objective (RMSE only) - shows value of 2 objectives
+  - A6 MOMFA with all 25 features fixed (HPO only) - shows value of joint
+       optimization directly
+  Same budget and seeds as the main experiment (may use a ticker subset).
+
+9.13 Reproducibility
+  - Set seeds for python random, numpy, torch (CPU and CUDA); use
+    torch.backends.cudnn.deterministic = True where practical.
+  - Save the raw downloaded data to disk ONCE (data/raw/*.csv) with the
+    download date. All experiments read from the saved files, never from a
+    fresh download (TradingView data can change).
+  - Every run writes its config (all parameters, seed, git commit hash) next
+    to its results.
+
+--------------------------------------------------------------------------------
+10. RESULTS LOGGING (what every run must save)
+--------------------------------------------------------------------------------
+Directory layout [DEFAULT]:
+  results/<experiment>/<method>/<ticker>/seed_<k>/
+     config.json          all parameters, seed, git hash, start/end time
+     history.csv          per iteration: iter, alpha, archive_size,
+                          hypervolume, best_rmse, min_complexity, time_sec
+     evaluations.csv      every candidate evaluated: iter, firefly_id,
+                          mask (25 chars), layers, units, lr, dropout,
+                          lookback, optimizer, n_features, n_params,
+                          complexity, rmse_fold_1..K, rmse_mean, train_time
+     pareto_front.csv     final archive members (same columns)
+     final_models.csv     selected model(s) (minRMSE, knee) with TEST-period
+                          RMSE, MAE, MAPE, DA in REAL price units (Rs.)
+     predictions.csv      date, actual_close, predicted_close, method
+                          (test period, for the selected models)
+  results/summary/
+     metrics_all.csv      one row per (method, ticker, seed, model_choice)
+     wilcoxon.csv         method_a, method_b, ticker, n, statistic,
+                          p_raw, p_holm, effect_size, significant
+     feature_frequency.csv  indicator, times selected in Pareto fronts, %
+
+Rules:
+  - All plots are generated ONLY from these saved files by scripts in
+    plots/ (never from in-memory variables during training), so every
+    figure can be regenerated.
+  - Metrics are reported in real price units (inverse-transformed) as well
+    as scaled units where useful. MAPE and DA are unit-free.
+
+--------------------------------------------------------------------------------
+11. RESULTS VISUALISATION PLAN (thesis figures and tables)
+--------------------------------------------------------------------------------
+The thesis is read by people, so every key result needs a table AND a
+figure. Planned figures:
+
+A. Data
+  F1  Close price per ticker (5 years) with development/test split and
+      walk-forward folds shaded.
+  F2  Correlation heatmap of the 25 indicators (shows redundancy, motivates
+      feature selection).
+B. Forecasts
+  F3  Actual vs. predicted close on the test period, best MOMFA model vs.
+      best baseline vs. random walk (one ticker in the main text, the rest in
+      the appendix). Include a zoomed 30-day panel.
+  F4  Residual (error) distribution per method.
+C. Method comparison
+  F5  Boxplots of test RMSE over 30 runs, one box per method (per ticker or
+      normalised and pooled). Main figure for the stochastic comparison.
+  F6  Heatmap: tickers (rows) x methods (columns), cell = mean MAPE.
+  F7  Bar chart of Directional Accuracy per method with a 50% reference line.
+  T1  Table: mean +/- std of RMSE, MAE, MAPE, DA per method (bold = best).
+  T2  Table: Wilcoxon results (raw p, Holm p, effect size, significant yes/no).
+D. MOMFA-specific (the main research visuals)
+  F8  Pareto front scatter: x = complexity (log scale), y = validation RMSE.
+      Plot the baseline models on the SAME axes as single points.
+      This figure directly shows the accuracy-vs-complexity argument.
+  F9  Hypervolume vs. iteration (mean +/- std over 30 runs) - convergence.
+  F10 Feature selection frequency: bar chart of how often each of the 25
+      indicators appears in Pareto-front solutions, coloured by group
+      (momentum/trend/volatility/volume). Interpretable finding for CSE.
+  F11 Distribution of chosen hyperparameters in Pareto solutions
+      (layers, units, lookback, optimizer).
+E. Ablation and cost
+  F12 Bar chart / boxplot of the ablation variants (A1-A6).
+  T3  Runtime and number of evaluations per method.
+
+--------------------------------------------------------------------------------
+12. VERIFICATION: HOW TO KNOW THE RESULTS ARE CORRECT AND MEANINGFUL
+--------------------------------------------------------------------------------
+12.1 Sanity checks (run on every experiment; report failures, do not hide)
+  S1  Beat random walk. Every learned model's test RMSE/MAE must be compared
+      with the persistence model. Many LSTM stock papers fail this. If a
+      model does not beat it, say so plainly.
+  S2  Lag check. A model that just copies yesterday's price looks accurate on
+      a plot. Compute correlation between predicted_t and actual_{t-1}
+      vs. actual_t; if the prediction matches the lagged series better, the
+      model has learned persistence only. Flag it.
+  S3  Directional accuracy must be compared with 50% and with the
+      "always predict the majority direction" rate on the test period.
+  S4  Real units. Always also report RMSE/MAE in Rs. after inverse scaling.
+  S5  Consistency across tickers. Report on how many of the 10 tickers MOMFA
+      wins, not only the average.
+  S6  Convergence. Hypervolume should increase (non-decreasing) over
+      iterations; archive should not collapse to one point.
+  S7  Leakage unit tests pass (scaler fit on train only; target is shifted
+      by +1 day; no test dates appear in any training fold).
+  S8  Smoke test before full runs: tiny config (N=4, T=2, 1 ticker, 1 fold,
+      2 epochs) must run end-to-end and produce every file in Section 10.
+
+12.2 Interpreting results honestly
+  - If MOMFA has clearly lower RMSE with p < 0.05 -> main claim supported.
+  - If RMSE is similar but MOMFA reaches it with far lower complexity (fewer
+    features / parameters) -> the multi-objective claim is supported; this
+    is still a valid, publishable result. Show it with F8.
+  - If MOMFA is worse -> report it, analyse why (budget, overfitting,
+    search space) using the ablation. Never tune on the test set to change
+    the outcome.
+
+--------------------------------------------------------------------------------
+13. WORKING RULES FOR AI CODING ASSISTANTS (e.g. Claude Code in VS Code)
+--------------------------------------------------------------------------------
+  R1  This file is the specification. Read the relevant section before
+      writing or changing code, and cite the section number in your reply
+      (e.g. "implements 3.E.4 sigmoid transfer, 9.6 decoding").
+  R2  Do not invent methods, parameters or shortcuts that are not in this
+      file. If something is missing or ambiguous, STOP and ask the author.
+      Do not silently choose. Items marked [OPEN] need an explicit answer.
+  R3  If you deviate from this file for any reason (library limitation,
+      bug, performance), write the deviation in DECISIONS.md with date,
+      reason, and the section affected, and tell the author.
+  R4  Never claim something works without running it. After each module,
+      run its tests / smoke test and show the actual output and numbers.
+      "It should work" is not acceptable.
+  R5  Never hard-code results, fake data, or skip evaluation to make numbers
+      look good. Never touch the final test period during optimization.
+  R6  Keep MOMFA and all baselines on the same data split, folds, training
+      protocol, evaluation budget and seeds (fairness, 9.8).
+  R7  Build in this order and confirm each step with the author:
+        1 data download + storage        2 indicators + leakage tests
+        3 walk-forward splitter           4 LSTM model + trainer
+        5 random walk + vanilla LSTM      6 grid search
+        7 PSO/GA/GWO/WOA baselines        8 MOMFA (standard FA first,
+                                            then Levy, sigmoid, archive)
+        9 results logging (Section 10)   10 plots (Section 11)
+       11 statistics (9.11)              12 ablation (9.12)
+  R8  After every experiment, run the sanity checks in 12.1 and report which
+      pass and which fail, in plain language the author can understand.
+
+--------------------------------------------------------------------------------
+REFERENCES
+--------------------------------------------------------------------------------
+[1]  A. J. P. Samarawickrama and T. G. I. Fernando, "A recurrent neural
+     network approach in predicting daily stock prices: An application to the
+     Sri Lankan stock market," 2017 IEEE Int. Conf. on Industrial and
+     Information Systems (ICIIS), 2017.
+[2]  S. Joseph and N. Mduma, "A deep learning model for predicting stock
+     prices in Tanzania," Engineering, Technology & Applied Science Research,
+     vol. 13, no. 2, pp. 10517-10522, 2023.
+[3]  H. H. Htun, M. Biehl, and N. Petkov, "Survey of feature selection and
+     extraction techniques for stock market prediction," Financial
+     Innovation, vol. 9, p. 26, 2023.
+[4]  X. Zeng, C. Liang, Q. Yang, F. Wang, and J. Cai, "Enhancing stock index
+     prediction: A hybrid LSTM-PSO model for improved forecasting accuracy,"
+     PLoS ONE, vol. 20, no. 1, p. e0310296, 2025.
+[5]  S. R. Das, D. Mishra, and M. Rout, "Stock market prediction using
+     firefly algorithm with evolutionary framework optimized feature
+     reduction for OSELM method," Expert Systems with Applications: X,
+     vol. 4, p. 100016, 2019.
+[6]  M. H. Safari and S. Hosseini, "A novel framework using particle swarm
+     optimization and long short-term memory networks for stock market
+     forecasting," Scientific Reports, 2026.
+[7]  Y. Tang, Z. Gao, Z. Cai, J. Yu, and P. Qin, "Enhanced futures
+     price-spread forecasting based on an attention-driven optimized LSTM
+     network: integrating an improved grey wolf optimizer algorithm for
+     enhanced accuracy," PeerJ Computer Science, 2025.
+[8]  M. Zhu, H. Qi, and P. Qin, "IGWO-MALSTM: An improved grey
+     wolf-optimized hybrid LSTM with multi-head attention for financial time
+     series forecasting," Applied Sciences, vol. 15, no. 12, p. 6619, 2025.
+[9]  F. Liu, P. Qin, J. You, and Y. Fu, "Sparrow search algorithm-optimized
+     long short-term memory model for stock trend prediction," Computational
+     Intelligence and Neuroscience, vol. 2022, 2022.
+[10] B. Gulmez, "A hybrid approach for stock market price forecasting using
+     long short-term memory and seahorse optimization algorithm," Annals of
+     Data Science, 2025.
+[11] X.-S. Yang, "Firefly algorithms for multimodal optimization," in
+     Stochastic Algorithms: Foundations and Applications (SAGA 2009), LNCS
+     vol. 5792, pp. 169-178, 2009.
+[12] I. Fister, I. Fister Jr., X.-S. Yang, and J. Brest, "A comprehensive
+     review of firefly algorithms," Swarm and Evolutionary Computation,
+     vol. 13, pp. 34-46, 2013.
+[13] G. Joy, C. Huyck, and X. S. Yang, "Parameter tuning of the firefly
+     algorithm by three tuning methods: Standard Monte Carlo, quasi-Monte
+     Carlo and Latin hypercube sampling," Journal of Computational Science,
+     2025.
+[14] M. K. A. Ariyaratne, T. G. I. Fernando, and S. Weerakoon, "Solving
+     systems of nonlinear equations using a modified firefly algorithm
+     (MODFA)," Swarm and Evolutionary Computation, vol. 48, pp. 72-92, 2019.
+[15] Jyothi R. and Krishnamurthy G. N., "An efficient multi-objective
+     optimization-based framework for stock market prediction," Int. Journal
+     of Engineering Trends and Technology (IJETT), vol. 70, no. 2,
+     pp. 294-304, 2022.
+[16] D. O. Oyewola, T. O. Kehinde, S. A. Akinwunmi, and A. Musbahu
+     Abdulrahim, "Stock market prediction with optimized PLSTM-AL in smart
+     urban cities," Finance Research Open, vol. 1, p. 100019, 2025.
+[17] J. Kennedy and R. Eberhart, "Particle swarm optimization," Proc. ICNN'95
+     Int. Conf. on Neural Networks, pp. 1942-1948, 1995.
+[18] J. H. Holland, Adaptation in Natural and Artificial Systems: An
+     Introductory Analysis with Applications to Biology, Control, and
+     Artificial Intelligence. The MIT Press, 1992.
+[19] S. Mirjalili, S. M. Mirjalili, and A. Lewis, "Grey wolf optimizer,"
+     Advances in Engineering Software, vol. 69, pp. 46-61, 2014.
+[20] S. Mirjalili and A. Lewis, "The whale optimization algorithm," Advances
+     in Engineering Software, vol. 95, pp. 51-67, 2016.
+
+================================================================================
+END OF DOCUMENT
+================================================================================
